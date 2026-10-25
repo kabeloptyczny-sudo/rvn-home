@@ -12,13 +12,10 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.ExecutorService
 
-/** Spółki pokazywane w widżecie (bez .WA). */
-val GPW_TICKERS = listOf("PKO", "PKN", "CDR")
-
 /** Indeksy: klucz -> nazwa wyświetlana. */
 val GPW_INDICES = listOf("WIG20" to "WIG20", "MWIG40" to "mWIG40", "SWIG80" to "sWIG80")
 
-class Quote(val key: String, val price: Double, val prev: Double, val time: Long) {
+class Quote(val key: String, val price: Double, val prev: Double, val time: Long, val series: FloatArray = FloatArray(0)) {
     val changePct: Double get() = if (prev != 0.0) (price - prev) / prev * 100.0 else 0.0
 }
 
@@ -48,37 +45,49 @@ object Net {
     }
 }
 
-/** Yahoo Finance: /v8/finance/chart/<symbol>?range=1d&interval=1d, symbole z sufiksem .WA. */
+/**
+ * Yahoo Finance: /v8/finance/chart/<symbol>?range=1d&interval=5m, symbole z sufiksem .WA
+ * (WIG20.WA, MWIG40.WA, SWIG80.WA). Zmiana % z poprzedniego zamknięcia: meta.previousClose,
+ * a gdy brak - meta.chartPreviousClose. Sparkline: indicators.quote[0].close (null-e pomijane).
+ */
 class YahooSource : QuoteSource {
 
-    private fun candidates(key: String): List<String> = when (key) {
-        "WIG20", "MWIG40", "SWIG80" -> listOf("$key.WA", "^$key")
-        else -> listOf("$key.WA")
-    }
-
     override fun fetch(key: String): Quote? {
-        for (sym in candidates(key)) {
-            val body = try {
-                Net.get("https://query1.finance.yahoo.com/v8/finance/chart/" + java.net.URLEncoder.encode(sym, "UTF-8") +
-                        "?range=1d&interval=1d")
-            } catch (e: HttpFail) {
-                if (e.code == 404) continue
-                throw e
-            }
-            val meta = JSONObject(body).optJSONObject("chart")?.optJSONArray("result")
-                ?.optJSONObject(0)?.optJSONObject("meta") ?: continue
-            val price = meta.optDouble("regularMarketPrice", Double.NaN)
-            var prev = meta.optDouble("chartPreviousClose", Double.NaN)
-            if (prev.isNaN()) prev = meta.optDouble("previousClose", Double.NaN)
-            if (price.isNaN() || prev.isNaN() || prev == 0.0) continue
-            return Quote(key, price, prev, meta.optLong("regularMarketTime", 0L) * 1000L)
+        val sym = "$key.WA"
+        val body = try {
+            Net.get("https://query1.finance.yahoo.com/v8/finance/chart/" + java.net.URLEncoder.encode(sym, "UTF-8") +
+                    "?range=1d&interval=5m")
+        } catch (e: HttpFail) {
+            if (e.code == 404) return null
+            throw e
         }
-        return null
+        val res = JSONObject(body).optJSONObject("chart")?.optJSONArray("result")?.optJSONObject(0) ?: return null
+        val meta = res.optJSONObject("meta") ?: return null
+        val price = meta.optDouble("regularMarketPrice", Double.NaN)
+        var prev = meta.optDouble("previousClose", Double.NaN)
+        if (prev.isNaN() || prev == 0.0) prev = meta.optDouble("chartPreviousClose", Double.NaN)
+        if (price.isNaN() || prev.isNaN() || prev == 0.0) return null
+
+        val closes = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0)?.optJSONArray("close")
+        val tmp = ArrayList<Float>()
+        if (closes != null) {
+            for (i in 0 until closes.length()) {
+                if (closes.isNull(i)) continue
+                val v = closes.optDouble(i, Double.NaN)
+                if (!v.isNaN()) tmp.add(v.toFloat())
+            }
+        }
+        val step = Math.max(1, (tmp.size + 59) / 60)
+        val out = ArrayList<Float>()
+        var i = 0
+        while (i < tmp.size) { out.add(tmp[i]); i += step }
+        if (tmp.isNotEmpty() && out.last() != tmp.last()) out.add(tmp.last())
+        return Quote(key, price, prev, meta.optLong("regularMarketTime", 0L) * 1000L, out.toFloatArray())
     }
 }
 
 /**
- * Odświeżanie notowań: co 2 min w sesji (pon-pt 9:00-17:35 Europe/Warsaw), poza nią co 30 min.
+ * Odświeżanie notowań (tylko WIG20, mWIG40, sWIG80): co 2 min w sesji (pon-pt 9:00-17:35 Europe/Warsaw), poza nią co 30 min.
  * Jeden wspólny executor aplikacji. Błąd/429 -> ostatnie dane z SharedPreferences z etykietą "nieaktualne".
  */
 class GpwController(
@@ -90,7 +99,7 @@ class GpwController(
 ) {
     private val prefs: SharedPreferences = ctx.getSharedPreferences("gpw", Context.MODE_PRIVATE)
     private val tz = TimeZone.getTimeZone("Europe/Warsaw")
-    private val keys: List<String> = GPW_INDICES.map { it.first } + GPW_TICKERS
+    private val keys: List<String> = GPW_INDICES.map { it.first }
     private val data = HashMap<String, Quote>()
     private var running = false
     private var busy = false
@@ -168,7 +177,9 @@ class GpwController(
             val o = JSONObject(s)
             for (k in keys) {
                 val q = o.optJSONObject(k) ?: continue
-                data[k] = Quote(k, q.getDouble("p"), q.getDouble("c"), q.getLong("t"))
+                val sa = q.optJSONArray("s")
+                val ser = FloatArray(sa?.length() ?: 0) { j -> sa!!.optDouble(j).toFloat() }
+                data[k] = Quote(k, q.getDouble("p"), q.getDouble("c"), q.getLong("t"), ser)
             }
             lastOk = prefs.getLong("ok", 0L)
             stale = true
@@ -178,7 +189,11 @@ class GpwController(
 
     private fun save() {
         val o = JSONObject()
-        for ((k, q) in data) o.put(k, JSONObject().put("p", q.price).put("c", q.prev).put("t", q.time))
+        for ((k, q) in data) {
+            val sa = org.json.JSONArray()
+            for (v in q.series) sa.put(Math.round(v * 100f) / 100.0)
+            o.put(k, JSONObject().put("p", q.price).put("c", q.prev).put("t", q.time).put("s", sa))
+        }
         prefs.edit().putString("q", o.toString()).putLong("ok", lastOk).apply()
     }
 

@@ -60,7 +60,7 @@ class BackgroundController(
         override fun run() {
             if (!running) return
             snapshot()
-            ui.postDelayed(this, if (mode == Mode.VIDEO) 150L else 500L)
+            ui.postDelayed(this, if (mode == Mode.VIDEO) 150L else if (nature?.simple == true) 2000L else 500L)
         }
     }
 

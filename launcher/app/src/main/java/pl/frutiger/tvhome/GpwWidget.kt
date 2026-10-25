@@ -2,6 +2,9 @@ package pl.frutiger.tvhome
 
 import android.content.Context
 import android.graphics.Typeface
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.RelativeSizeSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -14,76 +17,72 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/** Szklany, niefokusowalny panel z notowaniami GPW. Same TextView - zero pracy w onDraw. */
-class GpwWidget(ctx: Context, private val u: Float) : GlassView(ctx, u * 1.7f, hex(0x38FFFFFFL), hex(0x10FFFFFFL), true) {
+/** Wąski, szklany, niefokusowalny panel: WIG20, mWIG40, sWIG80. Same lekkie widoki, zero pracy w onDraw poza sparkline. */
+class GpwWidget(ctx: Context, private val u: Float) :
+    FrostPanel(ctx, u * 1.5f, hex(0x4D1B2027L), hex(0x2EFFFFFFL), Math.max(1f, u * 0.055f)) {
 
-    private class RowViews(val name: TextView, val value: TextView, val chg: TextView, val row: LinearLayout)
+    private class RowViews(val name: TextView, val value: TextView, val chg: TextView, val spark: SparklineView, val row: LinearLayout)
 
     private val rows = LinkedHashMap<String, RowViews>()
     private val status = TextView(ctx)
-    private val nf = NumberFormat.getNumberInstance(Locale("pl", "PL"))
-    private val clockFmt = SimpleDateFormat("HH:mm", Locale("pl", "PL"))
-    private val up = hex(0xFF30D158L)
-    private val down = hex(0xFFFF453AL)
-    private val flat = hex(0xCCFFFFFFL)
+    private val pl = Locale("pl", "PL")
+    private val nf = NumberFormat.getNumberInstance(pl)
+    private val clockFmt = SimpleDateFormat("HH:mm", pl)
 
     init {
-        lens = false
         isFocusable = false
+        isClickable = false
         nf.minimumFractionDigits = 2
         nf.maximumFractionDigits = 2
         val col = LinearLayout(ctx)
         col.orientation = LinearLayout.VERTICAL
-        col.setPadding((u * 1.6f).toInt(), (u * 1.0f).toInt(), (u * 1.6f).toInt(), (u * 1.1f).toInt())
-
-        val head = LinearLayout(ctx)
-        head.orientation = LinearLayout.HORIZONTAL
-        head.gravity = Gravity.CENTER_VERTICAL
-        val title = TextView(ctx)
-        title.text = "GPW"
-        txt(title, 1.25f, 0xF2FFFFFFL, true)
-        title.letterSpacing = 0.08f
-        head.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        txt(status, 0.95f, 0x99FFFFFFL, false)
-        head.addView(status)
-        col.addView(head)
-
-        for ((k, n) in GPW_INDICES) addRow(ctx, col, k, n)
-        for (t in GPW_TICKERS) addRow(ctx, col, t, t)
+        col.setPadding((u * 1.6f).toInt(), (u * 1.2f).toInt(), (u * 1.6f).toInt(), (u * 1.1f).toInt())
+        for ((k, n) in GPW_INDICES) addRow(ctx, col, k, n.lowercase(pl))
+        status.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 0.95f)
+        status.setTextColor(Pal.TEXT_DIM)
+        status.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        status.includeFontPadding = false
+        status.gravity = Gravity.END
+        val sp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        sp.topMargin = (u * 0.9f).toInt()
+        col.addView(status, sp)
         addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         visibility = View.GONE
     }
 
-    private fun txt(t: TextView, size: Float, color: Long, medium: Boolean) {
+    private fun txt(t: TextView, size: Float, color: Int, face: String) {
         t.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * size)
-        t.setTextColor(hex(color))
-        t.typeface = Typeface.create(if (medium) "sans-serif-medium" else "sans-serif", Typeface.NORMAL)
+        t.setTextColor(color)
+        t.typeface = Typeface.create(face, Typeface.NORMAL)
         t.includeFontPadding = false
         t.fontFeatureSettings = "tnum"
-        t.setShadowLayer(u * 0.5f, 0f, u * 0.12f, hex(0x66000000L))
     }
 
     private fun addRow(ctx: Context, col: LinearLayout, key: String, label: String) {
         val r = LinearLayout(ctx)
         r.orientation = LinearLayout.HORIZONTAL
         r.gravity = Gravity.CENTER_VERTICAL
-        val n = TextView(ctx); n.text = label; txt(n, 1.3f, 0xF2FFFFFFL, true)
-        val v = TextView(ctx); txt(v, 1.3f, 0xE6FFFFFFL, false); v.gravity = Gravity.END
-        val c = TextView(ctx); txt(c, 1.2f, 0xCCFFFFFFL, true); c.gravity = Gravity.END
-        r.addView(n, LinearLayout.LayoutParams((u * 6.0f).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
-        r.addView(v, LinearLayout.LayoutParams((u * 6.6f).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
-        r.addView(c, LinearLayout.LayoutParams((u * 5.6f).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
-        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        lp.topMargin = (u * 0.75f).toInt()
+        val n = TextView(ctx); n.text = label; txt(n, 1.15f, Pal.TEXT_DIM, "sans-serif")
+        val v = TextView(ctx); txt(v, 1.7f, Pal.TEXT, "sans-serif-light"); v.gravity = Gravity.END
+        val c = TextView(ctx); txt(c, 1.1f, Pal.FLAT, "sans-serif"); c.gravity = Gravity.END
+        val s = SparklineView(ctx, Math.max(1.5f, u * 0.10f))
+        val wrap = LinearLayout.LayoutParams.WRAP_CONTENT
+        r.addView(n, LinearLayout.LayoutParams((u * 4.6f).toInt(), wrap))
+        r.addView(v, LinearLayout.LayoutParams((u * 7.4f).toInt(), wrap))
+        r.addView(c, LinearLayout.LayoutParams((u * 5.4f).toInt(), wrap))
+        val slp = LinearLayout.LayoutParams((u * 4.8f).toInt(), (u * 1.7f).toInt())
+        slp.leftMargin = (u * 1.1f).toInt()
+        r.addView(s, slp)
+        val lp = LinearLayout.LayoutParams(wrap, wrap)
+        lp.topMargin = (u * 0.9f).toInt()
         col.addView(r, lp)
-        rows[key] = RowViews(n, v, c, r)
+        rows[key] = RowViews(n, v, c, s, r)
     }
 
     fun bind(data: Map<String, Quote>, newest: Long, stale: Boolean, loc: Locale, tz: TimeZone) {
         clockFmt.timeZone = tz
         val time = if (newest > 0L) clockFmt.format(Date(newest)) else ""
-        status.text = if (stale) "nieaktualne" + (if (time.isNotEmpty()) " · $time" else "")
-        else (if (time.isNotEmpty()) "$time · " else "") + "opóźnione"
+        status.text = if (stale) "nieaktualne" + (if (time.isNotEmpty()) " · $time" else "") else "opóźnione"
         for ((k, rv) in rows) {
             val q = data[k]
             if (q == null) {
@@ -93,9 +92,16 @@ class GpwWidget(ctx: Context, private val u: Float) : GlassView(ctx, u * 1.7f, h
             rv.row.visibility = View.VISIBLE
             rv.value.text = nf.format(q.price)
             val p = q.changePct
-            val arrow = if (p > 0.004) "▲" else if (p < -0.004) "▼" else "■"
-            rv.chg.text = arrow + " " + String.format(loc, "%.2f%%", Math.abs(p))
-            rv.chg.setTextColor(if (p > 0.004) up else if (p < -0.004) down else flat)
+            val up = p > 0.004
+            val down = p < -0.004
+            val color = if (up) Pal.UP else if (down) Pal.DOWN else Pal.FLAT
+            val sb = SpannableStringBuilder(if (up) "▲" else if (down) "▼" else "–")
+            sb.setSpan(RelativeSizeSpan(0.6f), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sb.append(' ').append(String.format(loc, "%.2f%%", Math.abs(p)))
+            rv.chg.text = sb
+            rv.chg.setTextColor(color)
+            rv.spark.set(q.series, color)
+            rv.spark.visibility = if (q.series.size >= 2) View.VISIBLE else View.INVISIBLE
         }
     }
 }

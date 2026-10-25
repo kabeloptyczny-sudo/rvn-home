@@ -52,7 +52,7 @@ class VideoBg(context: Context, private val files: List<File>) : FrameLayout(con
             if (!switching && mp != null && s.ready && !paused) {
                 try {
                     val d = mp.duration
-                    if (d > 0 && d - mp.currentPosition < 1700) startNext()
+                    if (d > 0 && d - mp.currentPosition < 3400) startNext()
                 } catch (e: Exception) {
                 }
             }
@@ -161,7 +161,7 @@ class VideoBg(context: Context, private val files: List<File>) : FrameLayout(con
         // crossfade z aktywnego na nowy
         fade?.cancel()
         val a = ValueAnimator.ofFloat(0f, 1f)
-        a.duration = 1400
+        a.duration = 3000
         a.addUpdateListener {
             val f = it.animatedValue as Float
             s.tv.alpha = f

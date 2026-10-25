@@ -11,7 +11,7 @@ import android.widget.FrameLayout
 class Saver : DreamService() {
 
     private var nature: NatureView? = null
-    private var clock: GlassClockView? = null
+    private var clock: ClockView? = null
     private val ui = Handler(Looper.getMainLooper())
     private var u = 19.2f
     private var step = 0
@@ -36,7 +36,7 @@ class Saver : DreamService() {
         val n = NatureView(this)
         nature = n
         root.addView(n, FrameLayout.LayoutParams(-1, -1))
-        val c = GlassClockView(this, u, 1.15f)
+        val c = ClockView(this, u, 1.15f)
         clock = c
         val lp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START)
         lp.leftMargin = (u * 6f).toInt()
