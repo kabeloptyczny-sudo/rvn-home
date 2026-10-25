@@ -15,7 +15,21 @@ android {
         versionName = "0.3"
     }
 
+    // stały klucz debug: każdy build (GitHub Actions) podpisany tak samo, więc działa adb install -r
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+            storeType = "pkcs12"
+        }
+    }
+
     buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
         }

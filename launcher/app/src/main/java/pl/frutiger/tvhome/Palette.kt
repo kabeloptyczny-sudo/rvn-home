@@ -21,5 +21,6 @@ object Pal {
 /** Ruch: 220 ms, ease-out, bez overshootu. */
 object Motion {
     const val MS = 220L
+    const val LABEL_MS = 150L
     val EASE: Interpolator = DecelerateInterpolator(1.6f)
 }

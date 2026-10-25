@@ -10,6 +10,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.View
 import java.util.Calendar
 import java.util.Random
@@ -25,7 +26,9 @@ import kotlin.math.sin
  * Spokojna natura: mgliste góry nad jeziorem, 4 warstwy z lekką paralaksą, miękkie odbicie,
  * winieta + przyciemnienie ok. 25%. Kolory płynnie zależą od pory dnia (świt, dzień, zmierzch, noc z gwiazdami).
  * Góry są wstępnie rysowane do masek ALPHA_8 (połowa rozdzielczości) - w onDraw tylko kilka tekstur.
- * Gdy klatki spadną poniżej 45 fps na 3 s: [simple] = true (bez paralaksy i odbić, brak pętli animacji).
+ * Animacja: max 30 fps (Choreographer, jeden invalidate na klatkę). Góry dryfują bardzo wolno (kilka px/min, różne
+ * prędkości warstw), mgła przesuwa się między warstwami, gwiazdy migoczą. Gdy klatki spadną poniżej 25 fps na 3 s:
+ * [simple] = true (bez mgły i migotania).
  */
 class NatureView(context: Context) : View(context) {
 
@@ -42,8 +45,30 @@ class NatureView(context: Context) : View(context) {
     private var t = 0f
     private var par = 0f
     private var lastMs = 0L
-    private var emaDt = 0.0167f
+    private var emaDt = 0.0333f
     private var slowSince = 0L
+    private var td = 0.0
+    private var lastPostNs = 0L
+
+    // dryf warstw gór: prędkość [px/min przy szer. 1920], amplituda [ułamek szerokości], faza
+    private val driftV = floatArrayOf(2f, 3.5f, 5.5f, 8f)
+    private val driftA = floatArrayOf(0.004f, 0.0075f, 0.010f, 0.012f)
+    private val driftPh = floatArrayOf(0f, 1.3f, 2.6f, 3.9f)
+    private val driftW = FloatArray(4) { driftV[it] / (60f * 1920f * driftA[it]) }
+    private val dOff = FloatArray(4)
+
+    // mgła między warstwami: banki przesuwające się poziomo (px/s przy szer. 1920)
+    private val NMB = 6
+    private val mL = intArrayOf(0, 0, 1, 1, 2, 2)
+    private val mV = floatArrayOf(0.50f, -0.35f, 0.42f, -0.55f, 0.60f, -0.40f)
+    private val mW = floatArrayOf(0.62f, 0.48f, 0.70f, 0.52f, 0.60f, 0.46f)
+    private val mY = floatArrayOf(0.30f, 0.52f, 0.28f, 0.50f, 0.26f, 0.48f)
+    private val mA = intArrayOf(64, 52, 60, 48, 56, 44)
+    private val mI = floatArrayOf(0.05f, 0.55f, 0.30f, 0.80f, 0.15f, 0.65f)
+    private val mx = FloatArray(NMB)
+    private var mspan = 3264f
+    private val blob = Bitmap.createBitmap(128, 32, Bitmap.Config.ALPHA_8)
+    private val pBlob = Paint(Paint.FILTER_BITMAP_FLAG)
 
     private val layers = 4
     private val hMaxK = floatArrayOf(0.30f, 0.22f, 0.15f, 0.085f)
@@ -105,6 +130,17 @@ class NatureView(context: Context) : View(context) {
         }
     }
 
+    private val frameCb = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!running) return
+            if (frameTimeNanos - lastPostNs >= 28_000_000L) {   // ~30 fps przy 60 Hz
+                lastPostNs = frameTimeNanos
+                invalidate()
+            }
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
     init {
         val r = Random(11)
         for (i in nz.indices) nz[i] = r.nextFloat()
@@ -116,6 +152,16 @@ class NatureView(context: Context) : View(context) {
             floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f), Shader.TileMode.CLAMP
         )
         Canvas(ramp).drawRect(0f, 0f, 4f, 32f, rp)
+        // miękki, poziomy "bank mgły" (elipsa 4:1)
+        val bp = Paint(Paint.ANTI_ALIAS_FLAG)
+        bp.shader = RadialGradient(
+            16f, 16f, 16f,
+            intArrayOf(hex(0xB0FFFFFFL), hex(0x60FFFFFFL), hex(0x20FFFFFFL), 0x00FFFFFF),
+            floatArrayOf(0f, 0.4f, 0.75f, 1f), Shader.TileMode.CLAMP
+        )
+        val bc = Canvas(blob)
+        bc.scale(4f, 1f)
+        bc.drawCircle(16f, 16f, 16f, bp)
         pVig.isDither = true
         updateEnv()
     }
@@ -130,12 +176,15 @@ class NatureView(context: Context) : View(context) {
         updateEnv()
         removeCallbacks(envTask)
         postDelayed(envTask, 1000L)
+        Choreographer.getInstance().removeFrameCallback(frameCb)
+        Choreographer.getInstance().postFrameCallback(frameCb)
         invalidate()
     }
 
     fun stop() {
         running = false
         removeCallbacks(envTask)
+        Choreographer.getInstance().removeFrameCallback(frameCb)
     }
 
     override fun onDetachedFromWindow() {
@@ -152,6 +201,8 @@ class NatureView(context: Context) : View(context) {
         H = h.toFloat()
         y0 = H * 0.70f
         buildMasks()
+        mspan = W * 1.7f
+        for (b in 0 until NMB) mx[b] = mI[b] * mspan
         vigSh = RadialGradient(
             W / 2f, H * 0.48f, hypot(W, H) * 0.56f,
             intArrayOf(hex(0x40000000L), hex(0x40000000L), hex(0x99000000L)),
@@ -284,31 +335,38 @@ class NatureView(context: Context) : View(context) {
         val now = SystemClock.uptimeMillis()
         var dt = (now - lastMs) / 1000f
         lastMs = now
-        if (dt > 0.1f) dt = 0.0167f
-        if (running && !simple) {
+        if (dt > 0.2f) dt = 0.0333f
+        if (running) {
             measure(dt, now)
             t += dt
             if (t > 6000f) t = 0f
+            td += dt
             val k = 1f - Math.exp((-7f * dt).toDouble()).toFloat()   // ease-out, stała czasowa ok. 140 ms
             par += (parallaxTarget - par) * k
+            if (!simple) {
+                val sc = W / 1920f
+                for (b in 0 until NMB) {
+                    var x = mx[b] + mV[b] * sc * dt
+                    if (x > mspan) x -= mspan else if (x < 0f) x += mspan
+                    mx[b] = x
+                }
+            }
         }
         drawScene(canvas)
-        if (running && !simple) postInvalidateOnAnimation()
     }
 
+    /** Poniżej 25 fps (średnio) przez 3 s: wyłącz mgłę i migotanie. */
     private fun measure(dt: Float, now: Long) {
         emaDt += (dt - emaDt) * 0.08f
-        if (emaDt > 1f / 45f) {
+        if (emaDt > 0.0425f) {
             if (slowSince == 0L) slowSince = now
-            else if (now - slowSince >= 3000L) {
-                simple = true      // uproszczenie: bez paralaksy i odbić
-                par = 0f
-            }
+            else if (!simple && now - slowSince >= 3000L) simple = true
         } else slowSince = 0L
     }
 
     /** Rysuje całą scenę w układzie ekranu (W x H); używane też do małej klatki dla szkła. */
     private fun drawScene(c: Canvas) {
+        for (i in 0 until layers) dOff[i] = (driftA[i] * W * sin(td * driftW[i] + driftPh[i])).toFloat()
         // niebo
         rf.set(0f, 0f, W, y0)
         c.drawBitmap(sky, srcSky, rf, pBmp)
@@ -318,7 +376,7 @@ class NatureView(context: Context) : View(context) {
         if (starAmt > 0.02f) {
             val n = stars.size / 4
             for (i in 0 until n) {
-                val tw = if (simple) 1f else 0.78f + 0.22f * sin(t * 0.7f + stars[i * 4 + 3])
+                val tw = if (simple) 1f else 0.78f + 0.22f * sin(t * (0.45f + 0.5f * stars[i * 4 + 2]) + stars[i * 4 + 3])
                 val a = (starAmt * (0.30f + 0.45f * (stars[i * 4 + 2] - 0.5f)) * tw * 255f).toInt()
                 pStar.setARGB(if (a < 0) 0 else if (a > 255) 255 else a, 240, 235, 220)
                 c.drawCircle(W * stars[i * 4], y0 * stars[i * 4 + 1], W * 0.0007f * stars[i * 4 + 2], pStar)
@@ -340,7 +398,7 @@ class NatureView(context: Context) : View(context) {
         // góry + mgła
         for (i in 0 until layers) {
             val m = masks[i] ?: continue
-            val left = -W * EXTRA - par * parK[i] * W
+            val left = -W * EXTRA - par * parK[i] * W + dOff[i]
             rf.set(left, topY[i], left + m.width / MASK_S, y0)
             pMask.color = layerCol[i]
             c.drawBitmap(m, null, rf, pMask)
@@ -349,13 +407,24 @@ class NatureView(context: Context) : View(context) {
             pMist.color = cur[4]
             pMist.alpha = (fogK[i] * breathe * 255f).toInt()
             c.drawBitmap(ramp, srcRamp, rf, pMist)
+            if (!simple) {
+                for (b in 0 until NMB) {
+                    if (mL[b] != i) continue
+                    val bx = mx[b] - W * 0.35f
+                    val cy = y0 - hMaxK[i] * H * mY[b]
+                    rf.set(bx, cy - H * 0.045f, bx + mW[b] * W, cy + H * 0.045f)
+                    pBlob.color = cur[4]
+                    pBlob.alpha = mA[b]
+                    c.drawBitmap(blob, null, rf, pBlob)
+                }
+            }
         }
 
         // woda
         rf.set(0f, y0, W, H)
         c.drawBitmap(water, srcSky, rf, pBmp)
 
-        if (!simple) {
+        run {
             // odbicie gór: lustro względem horyzontu, zanika w głąb jeziora
             c.save()
             c.clipRect(0f, y0, W, H)
@@ -363,7 +432,7 @@ class NatureView(context: Context) : View(context) {
             c.scale(1f, -1f)
             for (i in 0 until layers) {
                 val m = masks[i] ?: continue
-                val left = -W * EXTRA - par * parK[i] * W
+                val left = -W * EXTRA - par * parK[i] * W + dOff[i]
                 rf.set(left, topY[i], left + m.width / MASK_S, y0)
                 pMask.color = reflCol[i]
                 pMask.alpha = 120

@@ -1,6 +1,8 @@
 package pl.frutiger.tvhome
 
 import android.content.Context
+import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -17,7 +19,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/** Wąski, szklany, niefokusowalny panel: WIG20, mWIG40, sWIG80. Same lekkie widoki, zero pracy w onDraw poza sparkline. */
+/** Wąski, szklany, fokusowalny panel (OK = widok szczegółowy): WIG20, mWIG40, sWIG80. Same lekkie widoki, zero pracy w onDraw poza sparkline. */
 class GpwWidget(ctx: Context, private val u: Float) :
     FrostPanel(ctx, u * 1.5f, hex(0x4D1B2027L), hex(0x2EFFFFFFL), Math.max(1f, u * 0.055f)) {
 
@@ -25,13 +27,17 @@ class GpwWidget(ctx: Context, private val u: Float) :
 
     private val rows = LinkedHashMap<String, RowViews>()
     private val status = TextView(ctx)
+    private val fill = View(ctx)
+    var onOpen: (() -> Unit)? = null
     private val pl = Locale("pl", "PL")
     private val nf = NumberFormat.getNumberInstance(pl)
     private val clockFmt = SimpleDateFormat("HH:mm", pl)
 
     init {
-        isFocusable = false
-        isClickable = false
+        isFocusable = true
+        isClickable = true
+        defaultFocusHighlightEnabled = false
+        setOnClickListener { onOpen?.invoke() }
         nf.minimumFractionDigits = 2
         nf.maximumFractionDigits = 2
         val col = LinearLayout(ctx)
@@ -47,7 +53,24 @@ class GpwWidget(ctx: Context, private val u: Float) :
         sp.topMargin = (u * 0.9f).toInt()
         col.addView(status, sp)
         addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        // miękkie zaznaczenie (to samo co pigułka w doku): jasne wypełnienie + lekkie powiększenie
+        val fg = GradientDrawable()
+        fg.setColor(hex(0x2CEFE8DAL))
+        fg.cornerRadius = u * 1.5f
+        fill.background = fg
+        fill.alpha = 0f
+        addView(fill, 0, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         visibility = View.GONE
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        pivotX = width.toFloat()
+        pivotY = 0f
+        val z = if (gainFocus) 1.05f else 1f
+        animate().cancel()
+        animate().scaleX(z).scaleY(z).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
+        fill.animate().alpha(if (gainFocus) 1f else 0f).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
     }
 
     private fun txt(t: TextView, size: Float, color: Int, face: String) {

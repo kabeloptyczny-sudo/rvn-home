@@ -49,6 +49,10 @@ class MainActivity : Activity() {
     private lateinit var bg: BackgroundController
     private lateinit var gpw: GpwController
     private lateinit var clock: ClockView
+    private lateinit var gw: GpwWidget
+    private lateinit var dockHost: PillHost
+    private var gpwDetail: GpwDetailView? = null
+    private var returnTo: View? = null
     private var overlay: View? = null
     private var sources: List<String> = emptyList()
     private var srcIndex = 0
@@ -67,7 +71,7 @@ class MainActivity : Activity() {
 
     /** Liczba kafelków przed ulubionymi w doku (kafelek "TV"). */
     private val lead = 1
-    private val dockTileW = 9.0f
+    private val dockTileW = 6.6f
     private val gridTileW = 11.2f
 
     private val rotateTask = object : Runnable {
@@ -146,30 +150,35 @@ class MainActivity : Activity() {
         root.addView(clock, hlp)
 
         // widżet GPW (prawy górny róg)
-        val gw = GpwWidget(this, u)
+        gw = GpwWidget(this, u)
+        gw.id = View.generateViewId()
+        gw.onOpen = { openGpw() }
         val wlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
         wlp.rightMargin = uu(6f)
         wlp.topMargin = uu(4.2f)
         root.addView(gw, wlp)
         gpw = GpwController(this, worker, ui, gw)
 
-        // dok: matowe szkło, wąski
-        val dock = FrostPanel(this, u * 2.0f, hex(0x4D1B2027L), hex(0x2EFFFFFFL), Math.max(1f, u * 0.055f))
+        // dok: wąska "wyspa" dopasowana do zawartości, wyśrodkowana, ciemne matowe szkło + obwódka 1 px
+        val dock = FrostPanel(this, u * 2.2f, hex(0x9911151BL), hex(0x38FFFFFFL), 1f)
         rowScroll = HorizontalScrollView(this)
         rowScroll.isHorizontalScrollBarEnabled = false
         rowScroll.overScrollMode = View.OVER_SCROLL_NEVER
         rowScroll.clipChildren = false
         rowScroll.clipToPadding = false
-        rowScroll.setPadding(uu(1.6f), uu(1.5f), uu(1.6f), uu(1.1f))
+        rowScroll.setPadding(uu(0.8f), uu(0.6f), uu(0.8f), uu(0.4f))
+        dockHost = PillHost(this, u)
+        dockHost.setPadding(uu(1.0f), uu(1.0f), uu(1.0f), uu(0.8f))
         row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.clipChildren = false
-        rowScroll.addView(row, WRAP, WRAP)
-        dock.addView(rowScroll, FrameLayout.LayoutParams(MATCH, WRAP))
-        val dlp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM)
-        dlp.leftMargin = uu(6f)
-        dlp.rightMargin = uu(6f)
-        dlp.bottomMargin = uu(3f)
+        dockHost.addView(row, WRAP, WRAP)
+        rowScroll.addView(dockHost, WRAP, WRAP)
+        dock.addView(rowScroll, FrameLayout.LayoutParams(WRAP, WRAP))
+        val dlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        dlp.leftMargin = uu(4f)
+        dlp.rightMargin = uu(4f)
+        dlp.bottomMargin = uu(2.6f)
         root.addView(dock, dlp)
 
         setContentView(root)
@@ -191,6 +200,7 @@ class MainActivity : Activity() {
         ui.postDelayed(rotateTask, wait)
         bg.start()
         gpw.start()
+        gpwDetail?.start()
         clock.start()
     }
 
@@ -198,6 +208,7 @@ class MainActivity : Activity() {
         ui.removeCallbacks(rotateTask)
         bg.stop()
         gpw.stop()
+        gpwDetail?.stop()
         clock.stop()
         super.onPause()
     }
@@ -349,15 +360,21 @@ class MainActivity : Activity() {
 
     private fun makeTile(
         label: String, content: View, w: Float,
-        onClick: () -> Unit, onLong: (() -> Unit)?, dock: Boolean
+        onClick: () -> Unit, onLong: (() -> Unit)?, dock: Boolean, host: PillHost? = null
     ): TileView {
         val tile = TileView(this, u, w, label, content)
         tile.onFocus = { v ->
-            if (dock) lastDock = v
+            if (dock) {
+                lastDock = v
+                gw.nextFocusDownId = v.id
+            }
+            host?.focused(v)
             val loc = IntArray(2)
             v.getLocationOnScreen(loc)
             bg.setParallax((loc[0] + v.width / 2f) / Backdrop.screenW * 2f - 1f)
         }
+        tile.onBlur = { host?.blurred() }
+        if (dock) tile.nextFocusUpId = gw.id
         tile.setOnClickListener { onClick() }
         if (onLong != null) tile.setOnLongClickListener { onLong(); true }
         return tile
@@ -366,11 +383,12 @@ class MainActivity : Activity() {
     private fun buildRow(focusFirst: Boolean, animate: Boolean) {
         row.removeAllViews()
         tilePkg.clear()
+        lastDock = null
         val pm = packageManager
         val gap = uu(1.2f)
 
         // pierwszy kafelek: TV (lista wejść)
-        val tv = makeTile("TV", TvGlyphView(this), dockTileW, { openTv() }, null, true)
+        val tv = makeTile("TV", TvGlyphView(this), dockTileW, { openTv() }, null, true, dockHost)
         row.addView(tv, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
 
         for (pkg in favorites().take(9)) {
@@ -381,12 +399,13 @@ class MainActivity : Activity() {
                 continue
             }
             val hold = arrayOfNulls<View>(1)
-            val item = makeTile(label, visualFor(pkg, intent), dockTileW, { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true)
+            val item = makeTile(label, visualFor(pkg, intent), dockTileW, { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true, dockHost)
             hold[0] = item
             tilePkg[item] = pkg
             row.addView(item, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
         }
-        row.addView(makeTile("Aplikacje", GlyphView(this), dockTileW, { showAllApps() }, null, true), LinearLayout.LayoutParams(WRAP, WRAP))
+        row.addView(makeTile("Aplikacje", GlyphView(this), dockTileW, { showAllApps() }, null, true, dockHost), LinearLayout.LayoutParams(WRAP, WRAP))
+        gw.nextFocusDownId = row.getChildAt(0)?.id ?: View.NO_ID
         if (focusFirst) row.getChildAt(0)?.requestFocus()
         if (animate) playEntrance()
     }
@@ -405,6 +424,22 @@ class MainActivity : Activity() {
                 .setInterpolator(Motion.EASE)
                 .start()
         }
+    }
+
+    // ---------------------------------------------------------------- widok szczegółowy GPW
+
+    private fun openGpw() {
+        if (overlay != null) return
+        val holder = FrameLayout(this)
+        val detail = GpwDetailView(this, u, worker, ui, YahooSource())
+        val lp = FrameLayout.LayoutParams(MATCH, MATCH)
+        val mh = uu(6f)
+        val mv = (Backdrop.screenH * 0.06f).toInt()
+        lp.setMargins(mh, mv, mh, mv)
+        holder.addView(detail, lp)
+        gpwDetail = detail
+        showOverlay(holder, detail, hex(0xC00C1016L))
+        detail.start()
     }
 
     // ---------------------------------------------------------------- wejścia TV
@@ -476,6 +511,8 @@ class MainActivity : Activity() {
 
     private fun showOverlay(sheet: View, focus: View?, scrimTint: Int) {
         if (overlay != null) return
+        returnTo = currentFocus
+        gw.isFocusable = false
         val wrap = FrostPanel(this, 0f, scrimTint, 0, 0f)
         wrap.isClickable = true
         wrap.addView(sheet, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -491,7 +528,12 @@ class MainActivity : Activity() {
         val sheet = overlay ?: return
         overlay = null
         rowScroll.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-        (lastDock ?: row.getChildAt(0))?.requestFocus()
+        gw.isFocusable = true
+        gpwDetail?.stop()
+        gpwDetail = null
+        val back = returnTo
+        returnTo = null
+        (back?.takeIf { it.isAttachedToWindow && it.visibility == View.VISIBLE } ?: lastDock ?: row.getChildAt(0))?.requestFocus()
         (sheet as? ViewGroup)?.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         if (!animate) {
             root.removeView(sheet)
@@ -537,6 +579,8 @@ class MainActivity : Activity() {
         col.addView(title)
         col.addView(hint, hlp)
 
+        val gridHost = PillHost(this, u)
+        gridHost.setPadding(uu(1.0f), uu(1.0f), uu(1.0f), uu(1.0f))
         val grid = GridLayout(this)
         grid.columnCount = 6
         grid.clipChildren = false
@@ -567,7 +611,7 @@ class MainActivity : Activity() {
                     holder[0]?.labelView?.text = if (nowFav) "★ $label" else label
                     buildRow(false, false)
                 },
-                false
+                false, gridHost
             )
             holder[0] = item
             val glp = GridLayout.LayoutParams()
@@ -581,7 +625,8 @@ class MainActivity : Activity() {
         scroll.clipChildren = false
         scroll.clipToPadding = false
         scroll.setPadding(uu(1.2f), uu(2f), uu(1.2f), uu(4f))
-        scroll.addView(grid, WRAP, WRAP)
+        gridHost.addView(grid, WRAP, WRAP)
+        scroll.addView(gridHost, WRAP, WRAP)
         val slp = LinearLayout.LayoutParams(MATCH, 0, 1f)
         slp.topMargin = uu(1.2f)
         col.addView(scroll, slp)

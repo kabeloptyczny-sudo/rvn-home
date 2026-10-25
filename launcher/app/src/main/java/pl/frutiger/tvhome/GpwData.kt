@@ -19,11 +19,38 @@ class Quote(val key: String, val price: Double, val prev: Double, val time: Long
     val changePct: Double get() = if (prev != 0.0) (price - prev) / prev * 100.0 else 0.0
 }
 
+enum class ChartRange { D1, D5 }
+
+/** Wykres: czasy (ms) i wartości, bieżąca cena, poprzednie zamknięcie, otwarcie/max/min zakresu oraz oś czasu sesji. */
+class ChartData(
+    val key: String, val range: ChartRange,
+    val t: LongArray, val v: FloatArray,
+    val price: Double, val prev: Double,
+    val open: Double, val high: Double, val low: Double,
+    val axisStart: Long, val axisEnd: Long, val marketTime: Long
+)
+
+/** Sesja GPW wg zadanych reguł: pon-pt 9:00-17:35 Europe/Warsaw. */
+object GpwClock {
+    val zone: TimeZone = TimeZone.getTimeZone("Europe/Warsaw")
+
+    fun inSession(): Boolean {
+        val c = Calendar.getInstance(zone)
+        val dow = c.get(Calendar.DAY_OF_WEEK)
+        if (dow == Calendar.SATURDAY || dow == Calendar.SUNDAY) return false
+        val m = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE)
+        return m in 540..1055
+    }
+}
+
 class HttpFail(val code: Int) : IOException("HTTP $code")
 
 interface QuoteSource {
     /** @return notowanie, null gdy symbol nieznany; rzuca IOException przy błędzie sieci / HTTP (np. 429). */
     fun fetch(key: String): Quote?
+
+    /** Wykres dnia (D1: interval 1m, fallback 5m) lub 5 dni (D5: 15m). Rzuca IOException przy błędzie sieci / HTTP. */
+    fun fetchChart(key: String, range: ChartRange): ChartData?
 }
 
 object Net {
@@ -84,6 +111,82 @@ class YahooSource : QuoteSource {
         if (tmp.isNotEmpty() && out.last() != tmp.last()) out.add(tmp.last())
         return Quote(key, price, prev, meta.optLong("regularMarketTime", 0L) * 1000L, out.toFloatArray())
     }
+
+    override fun fetchChart(key: String, range: ChartRange): ChartData? {
+        val tries = if (range == ChartRange.D1) listOf("1d" to "1m", "1d" to "5m") else listOf("5d" to "15m")
+        var best: ChartData? = null
+        for ((rg, iv) in tries) {
+            val cd = try {
+                chart(key, rg, iv, range)
+            } catch (e: HttpFail) {
+                if (e.code == 400 || e.code == 404) null else throw e
+            }
+            if (cd != null && cd.t.size >= 5) return cd
+            if (cd != null && best == null) best = cd
+        }
+        return best
+    }
+
+    private fun chart(key: String, rg: String, iv: String, range: ChartRange): ChartData? {
+        val body = Net.get("https://query1.finance.yahoo.com/v8/finance/chart/" +
+                java.net.URLEncoder.encode("$key.WA", "UTF-8") + "?range=$rg&interval=$iv")
+        val res = JSONObject(body).optJSONObject("chart")?.optJSONArray("result")?.optJSONObject(0) ?: return null
+        val meta = res.optJSONObject("meta") ?: return null
+        val ts = res.optJSONArray("timestamp") ?: return null
+        val q = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0) ?: return null
+        val cl = q.optJSONArray("close") ?: return null
+        val op = q.optJSONArray("open")
+        val hi = q.optJSONArray("high")
+        val lo = q.optJSONArray("low")
+        val bucket = if (range == ChartRange.D1) 300L else 900L
+        val tt = ArrayList<Long>()
+        val vv = ArrayList<Float>()
+        var openV = Double.NaN
+        var hiV = Double.NEGATIVE_INFINITY
+        var loV = Double.POSITIVE_INFINITY
+        var lastB = Long.MIN_VALUE
+        for (i in 0 until ts.length()) {
+            if (cl.isNull(i)) continue
+            val c = cl.optDouble(i, Double.NaN)
+            if (c.isNaN()) continue
+            val sec = ts.optLong(i)
+            if (openV.isNaN() && op != null && !op.isNull(i)) openV = op.optDouble(i, Double.NaN)
+            if (hi != null && !hi.isNull(i)) hiV = Math.max(hiV, hi.optDouble(i, Double.NEGATIVE_INFINITY))
+            if (lo != null && !lo.isNull(i)) loV = Math.min(loV, lo.optDouble(i, Double.POSITIVE_INFINITY))
+            val b = sec / bucket
+            if (b == lastB && tt.isNotEmpty()) {
+                tt[tt.size - 1] = sec * 1000L
+                vv[vv.size - 1] = c.toFloat()
+            } else {
+                tt.add(sec * 1000L)
+                vv.add(c.toFloat())
+                lastB = b
+            }
+        }
+        if (tt.size < 2) return null
+        var mn = Float.MAX_VALUE
+        var mx = -Float.MAX_VALUE
+        for (x in vv) { if (x < mn) mn = x; if (x > mx) mx = x }
+        if (openV.isNaN()) openV = vv[0].toDouble()
+        if (hiV == Double.NEGATIVE_INFINITY) hiV = mx.toDouble()
+        if (loV == Double.POSITIVE_INFINITY) loV = mn.toDouble()
+        var prev = if (range == ChartRange.D1) meta.optDouble("previousClose", Double.NaN) else Double.NaN
+        if (prev.isNaN() || prev == 0.0) prev = meta.optDouble("chartPreviousClose", Double.NaN)
+        if (prev.isNaN() || prev == 0.0) return null
+        val price = meta.optDouble("regularMarketPrice", vv[vv.size - 1].toDouble())
+        val mt = meta.optLong("regularMarketTime", 0L) * 1000L
+        var a0 = tt[0]
+        var a1 = tt[tt.size - 1]
+        if (range == ChartRange.D1) {
+            val cal = Calendar.getInstance(GpwClock.zone)
+            cal.timeInMillis = tt[tt.size - 1]
+            cal.set(Calendar.HOUR_OF_DAY, 9); cal.set(Calendar.MINUTE, 0); cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+            a0 = cal.timeInMillis
+            cal.set(Calendar.HOUR_OF_DAY, 17); cal.set(Calendar.MINUTE, 35)
+            a1 = cal.timeInMillis
+        }
+        return ChartData(key, range, tt.toLongArray(), vv.toFloatArray(), price, prev, openV, hiV, loV, a0, a1, mt)
+    }
 }
 
 /**
@@ -131,13 +234,7 @@ class GpwController(
         ui.removeCallbacks(loop)
     }
 
-    private fun inSession(): Boolean {
-        val c = Calendar.getInstance(tz)
-        val dow = c.get(Calendar.DAY_OF_WEEK)
-        if (dow == Calendar.SATURDAY || dow == Calendar.SUNDAY) return false
-        val m = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE)
-        return m in 540..1055
-    }
+    private fun inSession(): Boolean = GpwClock.inSession()
 
     private fun refresh() {
         if (busy) return

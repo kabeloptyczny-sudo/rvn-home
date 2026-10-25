@@ -17,8 +17,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * Jednolity, zaokrąglony kafelek 16:9. Etykieta tylko przy zaznaczeniu.
- * Zaznaczenie: skala 1.08 + jasna obwódka (220 ms, ease-out, bez overshootu).
+ * Jednolity, zaokrąglony kafelek 16:9. Bez ramki: niezaznaczony przygaszony (70%), zaznaczony w pełnym kolorze,
+ * skala 1.10 (220 ms, ease-out) i etykieta (fade 150 ms). Miękką pigułkę podświetlenia rysuje [PillHost].
  */
 class TileView(
     ctx: Context,
@@ -31,8 +31,8 @@ class TileView(
 
     val card = FrameLayout(ctx)
     val labelView = TextView(ctx)
-    private val ring = View(ctx)
     var onFocus: ((TileView) -> Unit)? = null
+    var onBlur: ((TileView) -> Unit)? = null
 
     init {
         orientation = VERTICAL
@@ -42,6 +42,7 @@ class TileView(
         isFocusable = true
         isClickable = true
         defaultFocusHighlightEnabled = false
+        id = View.generateViewId()
 
         val w = (wU * u).toInt()
         val h = (wU * u * 9f / 16f).toInt()
@@ -53,15 +54,8 @@ class TileView(
         card.background = bgd
         card.outlineProvider = ViewOutlineProvider.BACKGROUND
         card.clipToOutline = true
+        card.alpha = DIM
         card.addView(content, FrameLayout.LayoutParams(-1, -1))
-
-        val rg = GradientDrawable()
-        rg.setColor(0)
-        rg.cornerRadius = r
-        rg.setStroke(Math.max(2, (u * 0.26f).toInt()), Pal.RING)
-        ring.background = rg
-        ring.alpha = 0f
-        card.addView(ring, FrameLayout.LayoutParams(-1, -1))
         addView(card, LayoutParams(w, h))
 
         labelView.text = label
@@ -81,12 +75,17 @@ class TileView(
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        val z = if (gainFocus) 1.08f else 1f
+        val z = if (gainFocus) 1.10f else 1f
         card.animate().cancel()
-        card.animate().scaleX(z).scaleY(z).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
-        ring.animate().alpha(if (gainFocus) 1f else 0f).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
-        if (showLabel) labelView.animate().alpha(if (gainFocus) 1f else 0f).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
-        if (gainFocus) onFocus?.invoke(this)
+        card.animate().scaleX(z).scaleY(z).alpha(if (gainFocus) 1f else DIM)
+            .setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
+        if (showLabel) labelView.animate().alpha(if (gainFocus) 1f else 0f)
+            .setDuration(Motion.LABEL_MS).setInterpolator(Motion.EASE).start()
+        if (gainFocus) onFocus?.invoke(this) else onBlur?.invoke(this)
+    }
+
+    companion object {
+        const val DIM = 0.7f
     }
 }
 
