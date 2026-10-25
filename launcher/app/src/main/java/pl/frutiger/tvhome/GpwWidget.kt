@@ -1,8 +1,8 @@
 package pl.frutiger.tvhome
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Rect
-import android.graphics.drawable.GradientDrawable
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -27,7 +27,8 @@ class GpwWidget(ctx: Context, private val u: Float) :
 
     private val rows = LinkedHashMap<String, RowViews>()
     private val status = TextView(ctx)
-    private val fill = View(ctx)
+    private val content = LinearLayout(ctx)
+    private val glow = SoftGlow(this)
     var onOpen: (() -> Unit)? = null
     private val pl = Locale("pl", "PL")
     private val nf = NumberFormat.getNumberInstance(pl)
@@ -40,7 +41,8 @@ class GpwWidget(ctx: Context, private val u: Float) :
         setOnClickListener { onOpen?.invoke() }
         nf.minimumFractionDigits = 2
         nf.maximumFractionDigits = 2
-        val col = LinearLayout(ctx)
+        val col = content
+        col.alpha = Sel.DIM
         col.orientation = LinearLayout.VERTICAL
         col.setPadding((u * 1.6f).toInt(), (u * 1.2f).toInt(), (u * 1.6f).toInt(), (u * 1.1f).toInt())
         for ((k, n) in GPW_INDICES) addRow(ctx, col, k, n.lowercase(pl))
@@ -53,13 +55,8 @@ class GpwWidget(ctx: Context, private val u: Float) :
         sp.topMargin = (u * 0.9f).toInt()
         col.addView(status, sp)
         addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-        // miękkie zaznaczenie (to samo co pigułka w doku): jasne wypełnienie + lekkie powiększenie
-        val fg = GradientDrawable()
-        fg.setColor(hex(0x2CEFE8DAL))
-        fg.cornerRadius = u * 1.5f
-        fill.background = fg
-        fill.alpha = 0f
-        addView(fill, 0, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        maxWFrac = 0.35f
+        maxHFrac = 0.35f
         visibility = View.GONE
     }
 
@@ -67,10 +64,22 @@ class GpwWidget(ctx: Context, private val u: Float) :
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         pivotX = width.toFloat()
         pivotY = 0f
-        val z = if (gainFocus) 1.05f else 1f
+        val z = if (gainFocus) Sel.SCALE else 1f
         animate().cancel()
-        animate().scaleX(z).scaleY(z).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
-        fill.animate().alpha(if (gainFocus) 1f else 0f).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
+        animate().scaleX(z).scaleY(z).setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
+        content.animate().cancel()
+        content.animate().alpha(if (gainFocus) 1f else Sel.DIM).setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
+        glow.set(gainFocus)
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        glow.draw(canvas, width / 2f, height.toFloat(), width * 0.55f, height * 0.40f)
+        super.dispatchDraw(canvas)
+    }
+
+    override fun onDetachedFromWindow() {
+        glow.cancel()
+        super.onDetachedFromWindow()
     }
 
     private fun txt(t: TextView, size: Float, color: Int, face: String) {

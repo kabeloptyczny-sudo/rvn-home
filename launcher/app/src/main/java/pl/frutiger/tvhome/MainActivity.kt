@@ -50,7 +50,6 @@ class MainActivity : Activity() {
     private lateinit var gpw: GpwController
     private lateinit var clock: ClockView
     private lateinit var gw: GpwWidget
-    private lateinit var dockHost: PillHost
     private var gpwDetail: GpwDetailView? = null
     private var returnTo: View? = null
     private var overlay: View? = null
@@ -146,7 +145,7 @@ class MainActivity : Activity() {
         clock.addView(greetingText, glp)
         val hlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
         hlp.leftMargin = uu(6f)
-        hlp.topMargin = uu(4.2f)
+        hlp.topMargin = (Backdrop.screenH * 0.075f).toInt()
         root.addView(clock, hlp)
 
         // widżet GPW (prawy górny róg)
@@ -154,8 +153,8 @@ class MainActivity : Activity() {
         gw.id = View.generateViewId()
         gw.onOpen = { openGpw() }
         val wlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
-        wlp.rightMargin = uu(6f)
-        wlp.topMargin = uu(4.2f)
+        wlp.rightMargin = uu(6f)                                  // prawy brzeg w 94% szerokości
+        wlp.topMargin = (Backdrop.screenH * 0.075f).toInt()       // górny brzeg w 7,5% wysokości
         root.addView(gw, wlp)
         gpw = GpwController(this, worker, ui, gw)
 
@@ -166,20 +165,23 @@ class MainActivity : Activity() {
         rowScroll.overScrollMode = View.OVER_SCROLL_NEVER
         rowScroll.clipChildren = false
         rowScroll.clipToPadding = false
-        rowScroll.setPadding(uu(0.8f), uu(0.6f), uu(0.8f), uu(0.4f))
-        dockHost = PillHost(this, u)
-        dockHost.setPadding(uu(1.0f), uu(1.0f), uu(1.0f), uu(0.8f))
+        rowScroll.setPadding(uu(1.6f), uu(1.3f), uu(1.6f), uu(1.5f))
         row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.clipChildren = false
-        dockHost.addView(row, WRAP, WRAP)
-        rowScroll.addView(dockHost, WRAP, WRAP)
+        rowScroll.addView(row, FrameLayout.LayoutParams(WRAP, WRAP))
+        dock.maxWFrac = 0.60f
+        dock.maxHFrac = 0.22f
         dock.addView(rowScroll, FrameLayout.LayoutParams(WRAP, WRAP))
         val dlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-        dlp.leftMargin = uu(4f)
-        dlp.rightMargin = uu(4f)
-        dlp.bottomMargin = uu(2.6f)
+        dlp.bottomMargin = (Backdrop.screenH * 0.05f).toInt()
         root.addView(dock, dlp)
+
+        // napis w prawym dolnym rogu (stały, półprzezroczysty)
+        val tlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.END)
+        tlp.rightMargin = uu(1.6f)
+        tlp.bottomMargin = (Backdrop.screenH * 0.02f).toInt()
+        root.addView(brandTag(this, u), tlp)
 
         setContentView(root)
         loadSources()
@@ -360,7 +362,7 @@ class MainActivity : Activity() {
 
     private fun makeTile(
         label: String, content: View, w: Float,
-        onClick: () -> Unit, onLong: (() -> Unit)?, dock: Boolean, host: PillHost? = null
+        onClick: () -> Unit, onLong: (() -> Unit)?, dock: Boolean
     ): TileView {
         val tile = TileView(this, u, w, label, content)
         tile.onFocus = { v ->
@@ -368,12 +370,10 @@ class MainActivity : Activity() {
                 lastDock = v
                 gw.nextFocusDownId = v.id
             }
-            host?.focused(v)
             val loc = IntArray(2)
             v.getLocationOnScreen(loc)
             bg.setParallax((loc[0] + v.width / 2f) / Backdrop.screenW * 2f - 1f)
         }
-        tile.onBlur = { host?.blurred() }
         if (dock) tile.nextFocusUpId = gw.id
         tile.setOnClickListener { onClick() }
         if (onLong != null) tile.setOnLongClickListener { onLong(); true }
@@ -388,7 +388,7 @@ class MainActivity : Activity() {
         val gap = uu(1.2f)
 
         // pierwszy kafelek: TV (lista wejść)
-        val tv = makeTile("TV", TvGlyphView(this), dockTileW, { openTv() }, null, true, dockHost)
+        val tv = makeTile("TV", TvGlyphView(this), dockTileW, { openTv() }, null, true)
         row.addView(tv, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
 
         for (pkg in favorites().take(9)) {
@@ -399,12 +399,12 @@ class MainActivity : Activity() {
                 continue
             }
             val hold = arrayOfNulls<View>(1)
-            val item = makeTile(label, visualFor(pkg, intent), dockTileW, { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true, dockHost)
+            val item = makeTile(label, visualFor(pkg, intent), dockTileW, { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true)
             hold[0] = item
             tilePkg[item] = pkg
             row.addView(item, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
         }
-        row.addView(makeTile("Aplikacje", GlyphView(this), dockTileW, { showAllApps() }, null, true, dockHost), LinearLayout.LayoutParams(WRAP, WRAP))
+        row.addView(makeTile("Aplikacje", GlyphView(this), dockTileW, { showAllApps() }, null, true), LinearLayout.LayoutParams(WRAP, WRAP))
         gw.nextFocusDownId = row.getChildAt(0)?.id ?: View.NO_ID
         if (focusFirst) row.getChildAt(0)?.requestFocus()
         if (animate) playEntrance()
@@ -431,6 +431,7 @@ class MainActivity : Activity() {
     private fun openGpw() {
         if (overlay != null) return
         val holder = FrameLayout(this)
+        holder.clipChildren = false     // miękki cień panelu wychodzi poza jego obrys
         val detail = GpwDetailView(this, u, worker, ui, YahooSource())
         val lp = FrameLayout.LayoutParams(MATCH, MATCH)
         val mh = uu(6f)
@@ -579,8 +580,6 @@ class MainActivity : Activity() {
         col.addView(title)
         col.addView(hint, hlp)
 
-        val gridHost = PillHost(this, u)
-        gridHost.setPadding(uu(1.0f), uu(1.0f), uu(1.0f), uu(1.0f))
         val grid = GridLayout(this)
         grid.columnCount = 6
         grid.clipChildren = false
@@ -611,7 +610,7 @@ class MainActivity : Activity() {
                     holder[0]?.labelView?.text = if (nowFav) "★ $label" else label
                     buildRow(false, false)
                 },
-                false, gridHost
+                false
             )
             holder[0] = item
             val glp = GridLayout.LayoutParams()
@@ -625,8 +624,7 @@ class MainActivity : Activity() {
         scroll.clipChildren = false
         scroll.clipToPadding = false
         scroll.setPadding(uu(1.2f), uu(2f), uu(1.2f), uu(4f))
-        gridHost.addView(grid, WRAP, WRAP)
-        scroll.addView(gridHost, WRAP, WRAP)
+        scroll.addView(grid, FrameLayout.LayoutParams(WRAP, WRAP))
         val slp = LinearLayout.LayoutParams(MATCH, 0, 1f)
         slp.topMargin = uu(1.2f)
         col.addView(scroll, slp)

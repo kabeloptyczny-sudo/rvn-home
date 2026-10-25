@@ -6,6 +6,7 @@ import android.graphics.DashPathEffect
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.Handler
@@ -26,6 +27,9 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.floor
+import kotlin.math.log10
+import kotlin.math.pow
 import kotlin.math.max
 import kotlin.math.min
 
@@ -170,6 +174,37 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     private var pt = 0f
     private var pb = 0f
     private var yDirty = false
+    private var paused = false
+    private var isD1 = true
+    private var tms = LongArray(0)
+
+    // kursor (← →), siatka, znaczniki maks/min: teksty powstają przy zmianie danych/klawiszu, nigdy w onDraw
+    private var cursor = -1
+    private var cursorIdle = 0f
+    private var curTime = ""
+    private var curPrice = ""
+    private var curChg = ""
+    private var curCol = Pal.FLAT
+    private var gridN = 0
+    private val gridV = FloatArray(7)
+    private val gridY = FloatArray(7)
+    private val gridT = arrayOfNulls<String>(7)
+    private var maxI = 0
+    private var minI = 0
+    private var maxT = ""
+    private var minT = ""
+    private var prevT = ""
+    private val tip = RectF()
+    private val pGrid = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pAxis = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pMark = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pTipBg = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pTipEdge = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pTipT = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pTipP = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pCur = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val timeFmt = SimpleDateFormat("HH:mm", Locale("pl", "PL"))
+    private val dayTimeFmt = SimpleDateFormat("EEE HH:mm", Locale("pl", "PL"))
 
     private val line = Path()
     private val fill = Path()
@@ -200,12 +235,96 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         pText.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
         pText.textAlign = Paint.Align.CENTER
         dayFmt.timeZone = GpwClock.zone
+        timeFmt.timeZone = GpwClock.zone
+        dayTimeFmt.timeZone = GpwClock.zone
+        pText.fontFeatureSettings = "tnum"
+        pGrid.style = Paint.Style.STROKE
+        pGrid.strokeWidth = 1f
+        pGrid.color = hex(0x14EFE8DAL)
+        pAxis.textSize = u * 0.9f
+        pAxis.color = hex(0x70EFE8DAL)
+        pAxis.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        pAxis.fontFeatureSettings = "tnum"
+        pMark.textSize = u * 1.0f
+        pMark.color = Pal.TEXT_DIM
+        pMark.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        pMark.fontFeatureSettings = "tnum"
+        pMark.textAlign = Paint.Align.CENTER
+        pTipBg.color = hex(0xE6141A22L)
+        pTipBg.setShadowLayer(u * 0.9f, 0f, u * 0.3f, hex(0x66000000L))
+        pTipEdge.style = Paint.Style.STROKE
+        pTipEdge.strokeWidth = 1f
+        pTipEdge.color = hex(0x38FFFFFFL)
+        pTipT.textSize = u * 0.95f
+        pTipT.color = Pal.TEXT_DIM
+        pTipT.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        pTipT.fontFeatureSettings = "tnum"
+        pTipP.textSize = u * 1.55f
+        pTipP.color = Pal.TEXT
+        pTipP.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        pTipP.fontFeatureSettings = "tnum"
+        pCur.style = Paint.Style.STROKE
+        pCur.strokeWidth = Math.max(1f, u * 0.05f)
     }
 
     fun clear() {
         n = 0
         lastCtx = ""
+        cursor = -1
         invalidate()
+    }
+
+    fun pauseAnim() {
+        paused = true
+        Ticker.remove(this)
+    }
+
+    fun resumeAnim() {
+        paused = false
+        if (attached) Ticker.add(this)
+    }
+
+    /** Kursor: ← → przesuwa po punktach (krok ~1% serii), po 4 s bezczynności znika. */
+    fun moveCursor(d: Int) {
+        if (n < 2) return
+        val step = Math.max(1, n / 90)
+        cursor = if (cursor < 0) n - 1 else cursor
+        cursor = (cursor + d * step).coerceIn(0, n - 1)
+        cursorIdle = 0f
+        cursorStrings()
+        invalidate()
+    }
+
+    private fun f2(v: Float): String = String.format(pl2, "%.2f", v)
+
+    private fun cursorStrings() {
+        if (cursor < 0 || cursor >= n) return
+        val v = vs[cursor]
+        curTime = (if (isD1) timeFmt else dayTimeFmt).format(Date(tms[cursor])).replace(".", "")
+        curPrice = f2(v)
+        val d = v - prev
+        val pct = if (prev != 0f) d / prev * 100f else 0f
+        val sg = if (d > 0f) "+" else if (d < 0f) "−" else ""
+        curChg = sg + f2(abs(d)) + "   " + sg + String.format(pl2, "%.2f%%", abs(pct))
+        curCol = if (d > 0f) Pal.UP else if (d < 0f) Pal.DOWN else Pal.FLAT
+    }
+
+    private fun gridStrings() {
+        gridN = 0
+        val rng = tMax - tMin
+        if (rng <= 0f) return
+        val raw = rng / 3f
+        val mag = 10f.pow(floor(log10(raw)))
+        val nr = raw / mag
+        val step = (if (nr < 1.5f) 1f else if (nr < 3.5f) 2f else if (nr < 7.5f) 5f else 10f) * mag
+        val dec = if (step >= 1f) 0 else if (step >= 0.1f) 1 else 2
+        var v = Math.ceil((tMin / step).toDouble()).toFloat() * step
+        while (v <= tMax && gridN < 7) {
+            gridV[gridN] = v
+            gridT[gridN] = String.format(pl2, "%." + dec + "f", v)
+            gridN++
+            v += step
+        }
     }
 
     /** @param mode 0 = bez animacji, 1 = rysowanie od lewej (otwarcie/zmiana), 2 = wjazd nowego punktu */
@@ -218,6 +337,8 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
             xs = FloatArray(m); vs = FloatArray(m); px = FloatArray(m); py = FloatArray(m)
         }
         n = m
+        isD1 = cd.range == ChartRange.D1
+        tms = cd.t
         val span = (cd.axisEnd - cd.axisStart).toFloat()
         for (i in 0 until m) {
             xs[i] = if (cd.range == ChartRange.D1 && span > 0f) ((cd.t[i] - cd.axisStart) / span).coerceIn(0f, 1f)
@@ -241,6 +362,19 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
             yMax = tMax
             haveRange = true
         }
+        gridStrings()
+        maxI = 0
+        minI = 0
+        for (i in 1 until m) {
+            if (vs[i] > vs[maxI]) maxI = i
+            if (vs[i] < vs[minI]) minI = i
+        }
+        maxT = f2(vs[maxI])
+        minT = f2(vs[minI])
+        prevT = "zamk. " + f2(prev)
+        if (!sameCtx) cursor = -1
+        if (cursor >= m) cursor = m - 1
+        cursorStrings()
         // etykiety osi
         labN = 0
         if (cd.range == ChartRange.D1) {
@@ -274,13 +408,13 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         rebuildShader()
         buildPaths()
         invalidate()
-        if (attached) Ticker.add(this)
+        if (attached && !paused) Ticker.add(this)
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         attached = true
-        Ticker.add(this)
+        if (!paused) Ticker.add(this)
     }
 
     override fun onDetachedFromWindow() {
@@ -334,6 +468,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
                 px[i + 1], py[i + 1]
             )
         }
+        for (k in 0 until gridN) gridY[k] = pb - (gridV[k] - yMin) / rng * h
         fill.addPath(line)
         fill.lineTo(px[n - 1], pb)
         fill.lineTo(px[0], pb)
@@ -366,7 +501,14 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     }
 
     override fun onTick(dt: Float): Boolean {
-        if (!attached) return false
+        if (!attached || paused) return false
+        if (cursor >= 0) {
+            cursorIdle += dt
+            if (cursorIdle > 4f) {
+                cursor = -1
+                invalidate()
+            }
+        }
         pulse += dt
         dtAcc += dt
         if (dtAcc < 0.030f) return true
@@ -393,7 +535,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
             buildPaths()
             yDirty = false
         }
-        if (animating) {
+        if (animating || cursor >= 0) {
             invalidate()
         } else if (n >= 2) {
             updateTip()
@@ -406,13 +548,37 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     override fun onDraw(c: Canvas) {
         if (n < 2 || pb <= pt) return
         updateTip()
+
+        // siatka (subtelna) + etykiety osi Y
+        for (k in 0 until gridN) {
+            val y = gridY[k]
+            if (y < pt - 1f || y > pb + 1f) continue
+            c.drawLine(pl, y, pr, y, pGrid)
+            val s = gridT[k] ?: continue
+            c.drawText(s, pr - pAxis.measureText(s) - u * 0.2f, y - u * 0.3f, pAxis)
+        }
+        for (i in 0 until labN) {
+            val x = pl + labX[i] * (pr - pl)
+            c.drawLine(x, pt, x, pb, pGrid)
+        }
+
+        // przerywana linia poprzedniego zamknięcia + mała etykieta
         c.drawPath(dash, pDash)
-        val clipR = pl + revealNx() * (pr - pl) + 1f
+        c.drawText(prevT, pl + u * 0.2f, prevY - u * 0.3f, pAxis)
+
+        val rx = pl + revealNx() * (pr - pl)
+        val clipR = rx + 1f
         c.save()
         c.clipRect(0f, 0f, if (revealP >= 1f) width.toFloat() else clipR, height.toFloat())
         c.drawPath(fill, pFill)
         c.drawPath(line, pLine)
         c.restore()
+
+        // znaczniki maks/min dnia (pojawiają się, gdy linia je minie)
+        if (maxI != minI) {
+            if (px[maxI] <= rx) markPoint(c, maxI, maxT, true)
+            if (px[minI] <= rx) markPoint(c, minI, minT, false)
+        }
 
         // kropka z pulsowaniem
         val r = u * 0.36f
@@ -432,6 +598,50 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
             val x = (pl + labX[i] * (pr - pl)).coerceIn(w2, width - w2)
             c.drawText(s, x, ty, pText)
         }
+
+        if (cursor in 0 until n) drawCursor(c)
+    }
+
+    private fun markPoint(c: Canvas, i: Int, s: String, above: Boolean) {
+        pCur.color = hex(0xB3EFE8DAL)
+        c.drawCircle(px[i], py[i], u * 0.24f, pCur)
+        val w2 = pMark.measureText(s) / 2f
+        val x = px[i].coerceIn(w2 + 2f, width - w2 - 2f)
+        val y = if (above) py[i] - u * 0.7f else py[i] + u * 1.55f
+        c.drawText(s, x, y, pMark)
+    }
+
+    private fun drawCursor(c: Canvas) {
+        val x = px[cursor]
+        val y = py[cursor]
+        pCur.color = hex(0x55EFE8DAL)
+        c.drawLine(x, pt, x, pb, pCur)
+        pCur.color = Pal.TEXT
+        pDot.alpha = 255
+        c.drawCircle(x, y, u * 0.34f, pDot)
+        c.drawCircle(x, y, u * 0.34f, pCur)
+        // dymek: godzina, cena, zmiana
+        val pad = u * 0.9f
+        val wT = pTipT.measureText(curTime)
+        val wP = pTipP.measureText(curPrice)
+        val lh = u * 1.25f
+        val bw = Math.max(wP, Math.max(wT, pTipT.measureText(curChg))) + pad * 2f
+        val bh = pad * 2f + lh * 0.9f + u * 1.55f + lh
+        var left = x - bw / 2f
+        left = left.coerceIn(0f, Math.max(0f, width - bw))
+        var top = y - bh - u * 1.1f
+        if (top < 0f) top = y + u * 1.1f
+        tip.set(left, top, left + bw, top + bh)
+        c.drawRoundRect(tip, u * 0.8f, u * 0.8f, pTipBg)
+        c.drawRoundRect(tip, u * 0.8f, u * 0.8f, pTipEdge)
+        var ty = top + pad + lh * 0.7f
+        c.drawText(curTime, left + pad, ty, pTipT)
+        ty += u * 1.55f + u * 0.15f
+        c.drawText(curPrice, left + pad, ty, pTipP)
+        ty += lh
+        pTipT.color = curCol
+        c.drawText(curChg, left + pad, ty, pTipT)
+        pTipT.color = Pal.TEXT_DIM
     }
 }
 
@@ -548,13 +758,34 @@ class GpwDetailView(
         stp.topMargin = (u * 1.2f).toInt()
         col.addView(stats, stp)
 
-        val hint = label("←  →  indeks        OK  1D / 5D        Wstecz  zamknij", 1.0f, Pal.TEXT_DIM, "sans-serif-light")
+        val hint = label("←  →  kursor        ↑  ↓  indeks        OK  1D / 5D        Wstecz  zamknij", 1.0f, Pal.TEXT_DIM, "sans-serif-light")
         hint.gravity = Gravity.END
         val hlp = LinearLayout.LayoutParams(-1, -2)
         hlp.topMargin = (u * 1.4f).toInt()
         col.addView(hint, hlp)
 
+        // głębia szkła: miękki cień pod panelem (elevation) + subtelny połysk górnej krawędzi
+        elevation = u * 1.4f
+        val tag = brandTag(ctx, u)
+        val tlp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START)
+        tlp.leftMargin = (u * 3.4f).toInt()
+        tlp.bottomMargin = (u * 2.0f).toInt()
+        addView(tag, tlp)
         updateTabs()
+    }
+
+    private val sheen = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val sheenRect = RectF()
+
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        super.onSizeChanged(w, h, ow, oh)
+        sheen.shader = LinearGradient(0f, 0f, 0f, h * 0.45f, 0x1CFFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
+        sheenRect.set(0f, 0f, w.toFloat(), h * 0.45f)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (width > 0) canvas.drawRoundRect(sheenRect, u * 2.0f, u * 2.0f, sheen)
     }
 
     private fun label(text: String, size: Float, color: Int, face: String): TextView {
@@ -587,13 +818,14 @@ class GpwDetailView(
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> { moveIndex(-1); return true }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> { moveIndex(1); return true }
+            KeyEvent.KEYCODE_DPAD_LEFT -> { chart.moveCursor(-1); return true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { chart.moveCursor(1); return true }
+            KeyEvent.KEYCODE_DPAD_UP -> { moveIndex(-1); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { moveIndex(1); return true }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
                 if (event.repeatCount == 0) toggleRange()
                 return true
             }
-            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> return true
         }
         return super.onKeyDown(keyCode, event)
     }
@@ -621,6 +853,7 @@ class GpwDetailView(
 
     fun start() {
         running = true
+        chart.resumeAnim()
         switchTo()
     }
 
@@ -628,6 +861,7 @@ class GpwDetailView(
         running = false
         token++
         ui.removeCallbacks(poll)
+        chart.pauseAnim()
     }
 
     private fun switchTo() {

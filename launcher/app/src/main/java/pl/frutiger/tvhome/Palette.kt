@@ -1,7 +1,11 @@
 package pl.frutiger.tvhome
 
+import android.content.Context
+import android.graphics.Typeface
+import android.util.TypedValue
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.Interpolator
+import android.widget.TextView
 
 /** Paleta: grafit, głęboki granat, zgaszona zieleń, ciepły piasek. */
 object Pal {
@@ -23,4 +27,21 @@ object Motion {
     const val MS = 220L
     const val LABEL_MS = 150L
     val EASE: Interpolator = DecelerateInterpolator(1.6f)
+}
+
+/** Napis firmowy (jedna stała, dokładnie ten tekst). */
+const val RAEVEN_TAG = "powered by RAEVEN_networking z GK RAEVEN"
+
+/** Bardzo mały, półprzezroczysty, nieruchomy napis do rogu ekranu. */
+fun brandTag(ctx: Context, u: Float): TextView {
+    val t = TextView(ctx)
+    t.text = RAEVEN_TAG
+    t.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 0.78f)
+    t.setTextColor(Pal.TEXT)
+    t.alpha = 0.34f
+    t.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+    t.includeFontPadding = false
+    t.isFocusable = false
+    t.isClickable = false
+    return t
 }

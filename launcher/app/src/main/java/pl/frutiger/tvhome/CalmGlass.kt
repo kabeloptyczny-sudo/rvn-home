@@ -29,6 +29,10 @@ open class FrostPanel(
 
     private class Sh(val bmp: Bitmap, val sh: BitmapShader)
 
+    /** Górne limity rozmiaru jako ułamek ekranu (zabezpieczenie przed rozciągnięciem panelu). */
+    var maxWFrac = 1f
+    var maxHFrac = 1f
+
     private val cache = arrayOfNulls<Sh>(3)
     private var cacheNext = 0
     private var shCur: Sh? = null
@@ -83,6 +87,24 @@ open class FrostPanel(
     override fun onDetachedFromWindow() {
         Backdrop.unregister(this)
         super.onDetachedFromWindow()
+    }
+
+    private fun capSpec(spec: Int, frac: Float, screen: Float): Int {
+        if (frac >= 1f || screen <= 0f) return spec
+        val limit = Math.max(1, (frac * screen).toInt())
+        val size = MeasureSpec.getSize(spec)
+        return when (MeasureSpec.getMode(spec)) {
+            MeasureSpec.EXACTLY -> spec
+            MeasureSpec.AT_MOST -> MeasureSpec.makeMeasureSpec(Math.min(size, limit), MeasureSpec.AT_MOST)
+            else -> MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST)   // UNSPECIFIED
+        }
+    }
+
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+        super.onMeasure(
+            capSpec(widthSpec, maxWFrac, Backdrop.screenW),
+            capSpec(heightSpec, maxHFrac, Backdrop.screenH)
+        )
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
