@@ -1,6 +1,5 @@
 package pl.frutiger.tvhome
 
-import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
@@ -11,13 +10,14 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Outline
+import android.graphics.Path
+import android.graphics.RadialGradient
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.view.View
 import android.view.ViewOutlineProvider
-import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 
 /** Skrót do zapisu kolorów ARGB jako liczby szesnastkowe (Long -> Int). */
@@ -50,14 +50,19 @@ object Backdrop {
     fun invalidateAll() {
         for (i in views.indices) views[i].invalidate()
     }
+
+    /** Wołać po zmianie cur/prev: szkło przepina zbuforowane shadery (bez alokacji w onDraw). */
+    fun commit() {
+        for (i in views.indices) (views[i] as? GlassView)?.rebind()
+        invalidateAll()
+    }
 }
 
 object Blur {
 
     /** Rozmywa tablicę pikseli ARGB (box blur, kilka przebiegów ~ rozmycie Gaussa). */
-    fun boxBlur(px: IntArray, w: Int, h: Int, r: Int, passes: Int) {
+    fun boxBlur(px: IntArray, w: Int, h: Int, r: Int, passes: Int, tmp: IntArray = IntArray(px.size)) {
         if (r < 1) return
-        val tmp = IntArray(px.size)
         repeat(passes) {
             pass(px, tmp, w, h, r, true)
             pass(tmp, px, w, h, r, false)
@@ -175,12 +180,13 @@ class GlyphView(context: Context) : View(context) {
 
 /**
  * Szklany panel w stylu iOS 26 "Liquid Glass":
- *  - rozmyta, podbita kolorystycznie tapeta z tyłu (prawdziwe matowe szkło),
- *  - jasna tafla z gradientem i refleksem,
- *  - świecąca krawędź (jaśniejsza w lewym górnym i prawym dolnym rogu),
- *  - po zaznaczeniu: powiększenie, uniesienie (cień), jaśniejsze szkło i delikatna poświata.
+ *  - rozmyta, podbita kolorystycznie tapeta z tyłu (matowe szkło),
+ *  - refrakcja przy krawędziach (dwa pierścienie z powiększonym fragmentem tła + jaśniejszy kolor),
+ *  - jasna tafla z gradientem, świecąca krawędź, miękka poświata,
+ *  - po zaznaczeniu: sprężyste powiększenie z overshootem, "oddychanie", refleks wjeżdżający od strony fokusu.
+ * Shadery są zbuforowane (2-3 bitmapy tła), w onDraw nie powstają żadne obiekty.
  */
-class GlassView(
+open class GlassView(
     context: Context,
     private val radius: Float,
     private val tintTop: Int,
@@ -189,35 +195,86 @@ class GlassView(
 ) : FrameLayout(context) {
 
     var zLift = 0f
+    var lens = true
+    var onFocusProgress: ((Float) -> Unit)? = null
     var focusAmt = 0f
         private set
 
-    private var anim: ValueAnimator? = null
+    private class ShSet(val bmp: Bitmap, val main: BitmapShader, val ra: BitmapShader, val rb: BitmapShader)
+
+    private val cache = arrayOfNulls<ShSet>(3)
+    private var cacheNext = 0
+    private var setCur: ShSet? = null
+    private var setPrev: ShSet? = null
+
+    private val spring = Spring(380f, 0.52f)
+    private val spec = Spring(170f, 0.60f, 0.3f)
+    private var focused = false
+    private var tSec = 0f
+
+    private val tick = object : Tick {
+        override fun onTick(dt: Float): Boolean {
+            tSec += dt
+            val a = spring.step(dt)
+            val b = spec.step(dt)
+            focusAmt = spring.x
+            val f = focusAmt
+            val fc = if (f < 0f) 0f else if (f > 1f) 1f else f
+            val s = 1f + 0.10f * f + 0.007f * fc * Math.sin(tSec * 2.2).toFloat()
+            scaleX = s
+            scaleY = s
+            translationZ = zLift * (if (f < 0f) 0f else f)
+            onFocusProgress?.invoke(f)
+            invalidate()
+            return a || b || focused
+        }
+    }
 
     private val rect = RectF()
     private val rimRect = RectF()
     private val softRect = RectF()
     private val haloRect = RectF()
     private val srcRect = RectF()
+    private val srcRect2 = RectF()
+    private val ringRectA = RectF()
+    private val ringRectB = RectF()
     private val m = Matrix()
+    private val m2 = Matrix()
     private val loc = IntArray(2)
+    private val clipP = Path()
     private var rimR = 0f
     private var softR = 0f
     private var rimW = 2f
+    private var ringRA = 0f
+    private var ringRB = 0f
+    private var specSh: RadialGradient? = null
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val ringPaintA = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val ringPaintB = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val tintPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val focusPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val shinePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val softPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val specPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     init {
         setWillNotDraw(false)
         val cm = ColorMatrix()
         cm.setSaturation(1.6f)
         bgPaint.colorFilter = ColorMatrixColorFilter(cm)
+        val ca = ColorMatrix()
+        ca.setSaturation(2.0f)
+        ca.postConcat(ColorMatrix(floatArrayOf(1.16f, 0f, 0f, 0f, 4f, 0f, 1.16f, 0f, 0f, 4f, 0f, 0f, 1.16f, 0f, 4f, 0f, 0f, 0f, 1f, 0f)))
+        ringPaintA.colorFilter = ColorMatrixColorFilter(ca)
+        val cb = ColorMatrix()
+        cb.setSaturation(2.2f)
+        cb.postConcat(ColorMatrix(floatArrayOf(1.30f, 0f, 0f, 0f, 10f, 0f, 1.30f, 0f, 0f, 10f, 0f, 0f, 1.30f, 0f, 10f, 0f, 0f, 0f, 1f, 0f)))
+        ringPaintB.colorFilter = ColorMatrixColorFilter(cb)
+        ringPaintA.style = Paint.Style.STROKE
+        ringPaintB.style = Paint.Style.STROKE
         focusPaint.color = Color.WHITE
         rimPaint.style = Paint.Style.STROKE
         softPaint.style = Paint.Style.STROKE
@@ -230,13 +287,37 @@ class GlassView(
         }
     }
 
+    // ------------------------------------------------------------ shadery tła (cache)
+
+    private fun setFor(b: Bitmap?): ShSet? {
+        if (b == null) return null
+        for (e in cache) if (e != null && e.bmp === b) return e
+        val e = ShSet(
+            b,
+            BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP),
+            BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP),
+            BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        )
+        cache[cacheNext] = e
+        cacheNext = (cacheNext + 1) % cache.size
+        return e
+    }
+
+    /** Przepina bieżący/poprzedni shader po zmianie tła (Backdrop.commit). */
+    fun rebind() {
+        setCur = setFor(Backdrop.cur?.blur)
+        setPrev = setFor(Backdrop.prev?.blur)
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         Backdrop.register(this)
+        rebind()
+        if (focused) Ticker.add(tick)
     }
 
     override fun onDetachedFromWindow() {
-        anim?.cancel()
+        Ticker.remove(tick)
         Backdrop.unregister(this)
         super.onDetachedFromWindow()
     }
@@ -251,6 +332,17 @@ class GlassView(
         softRect.set(rimW * 1.5f, rimW * 1.5f, fw - rimW * 1.5f, fh - rimW * 1.5f)
         rimR = Math.max(0f, radius - rimW / 2f)
         softR = Math.max(0f, radius - rimW * 1.5f)
+        clipP.rewind()
+        clipP.addRoundRect(rect, radius, radius, Path.Direction.CW)
+
+        val wa = Math.min(Math.min(fw, fh) * 0.16f, radius * 0.9f)
+        val wb = wa * 0.42f
+        ringPaintA.strokeWidth = wa
+        ringPaintB.strokeWidth = wb
+        ringRectA.set(wa / 2f, wa / 2f, fw - wa / 2f, fh - wa / 2f)
+        ringRectB.set(wb / 2f, wb / 2f, fw - wb / 2f, fh - wb / 2f)
+        ringRA = Math.max(0f, radius - wa / 2f)
+        ringRB = Math.max(0f, radius - wb / 2f)
 
         tintPaint.shader = LinearGradient(0f, 0f, 0f, fh, tintTop, tintBottom, Shader.TileMode.CLAMP)
         shinePaint.shader = LinearGradient(
@@ -268,26 +360,25 @@ class GlassView(
         softPaint.shader = rimShader
         softPaint.strokeWidth = rimW * 2.2f
         haloPaint.strokeWidth = rimW * 1.6f
+
+        val sr = Math.max(fw, fh) * 0.75f
+        specSh = RadialGradient(0f, 0f, sr, hex(0x80FFFFFFL), hex(0x00FFFFFFL), Shader.TileMode.CLAMP)
+        specPaint.shader = specSh
     }
 
-    /** Animacja zaznaczenia: powiększenie, uniesienie i rozjaśnienie szkła. */
-    fun setFocusLook(on: Boolean) {
-        anim?.cancel()
-        val to = if (on) 1f else 0f
-        val a = ValueAnimator.ofFloat(focusAmt, to)
-        a.duration = 230
-        a.interpolator = DecelerateInterpolator(1.6f)
-        a.addUpdateListener {
-            focusAmt = it.animatedValue as Float
-            val s = 1f + 0.10f * focusAmt
-            scaleX = s
-            scaleY = s
-            translationZ = zLift * focusAmt
-            invalidate()
+    /** Zaznaczenie: sprężyste powiększenie (overshoot), oddychanie, refleks wjeżdża od strony, z której przyszedł fokus (dir -1..1). */
+    fun setFocusLook(on: Boolean, dir: Float = 0f) {
+        focused = on
+        spring.target = if (on) 1f else 0f
+        if (on) {
+            spec.x = 0.3f + dir * 0.95f
+            spec.v = 0f
+            spec.target = 0.3f
         }
-        anim = a
-        a.start()
+        Ticker.add(tick)
     }
+
+    // ------------------------------------------------------------ rysowanie
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -299,9 +390,10 @@ class GlassView(
         val ww = width * scaleX
         val wh = height * scaleY
 
-        Backdrop.prev?.let { drawWall(canvas, it, wl, wt, ww, wh, 255) }
-        Backdrop.cur?.let {
-            drawWall(canvas, it, wl, wt, ww, wh, (Backdrop.fade.coerceIn(0f, 1f) * 255).toInt())
+        if (setCur == null && Backdrop.cur != null) rebind()
+        setPrev?.let { if (Backdrop.prev != null) drawWall(canvas, Backdrop.prev, it, wl, wt, ww, wh, 255, false) }
+        setCur?.let {
+            drawWall(canvas, Backdrop.cur, it, wl, wt, ww, wh, (Backdrop.fade.coerceIn(0f, 1f) * 255).toInt(), lens)
         }
 
         canvas.drawRoundRect(rect, radius, radius, tintPaint)
@@ -314,20 +406,39 @@ class GlassView(
     }
 
     private fun drawWall(
-        canvas: Canvas, wall: Wall,
-        wl: Float, wt: Float, ww: Float, wh: Float, alpha: Int
+        canvas: Canvas, wall: Wall?, set: ShSet,
+        wl: Float, wt: Float, ww: Float, wh: Float, alpha: Int, ring: Boolean
     ) {
+        if (wall == null) return
         val b = wall.blur
         val s = Math.max(Backdrop.screenW / b.width, Backdrop.screenH / b.height)
         val ox = (Backdrop.screenW - b.width * s) / 2f
         val oy = (Backdrop.screenH - b.height * s) / 2f
         srcRect.set((wl - ox) / s, (wt - oy) / s, (wl + ww - ox) / s, (wt + wh - oy) / s)
-        val shader = BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
         m.setRectToRect(srcRect, rect, Matrix.ScaleToFit.FILL)
-        shader.setLocalMatrix(m)
-        bgPaint.shader = shader
+        set.main.setLocalMatrix(m)
+        bgPaint.shader = set.main
         bgPaint.alpha = alpha
         canvas.drawRoundRect(rect, radius, radius, bgPaint)
+        if (!ring) return
+
+        // refrakcja: przy krawędziach tło jest powiększone (efekt soczewki) i jaśniejsze
+        val cx = srcRect.centerX()
+        val cy = srcRect.centerY()
+        val hw = srcRect.width() / 2f
+        val hh = srcRect.height() / 2f
+        srcRect2.set(cx - hw * 0.90f, cy - hh * 0.90f, cx + hw * 0.90f, cy + hh * 0.90f)
+        m2.setRectToRect(srcRect2, rect, Matrix.ScaleToFit.FILL)
+        set.ra.setLocalMatrix(m2)
+        ringPaintA.shader = set.ra
+        ringPaintA.alpha = alpha
+        canvas.drawRoundRect(ringRectA, ringRA, ringRA, ringPaintA)
+        srcRect2.set(cx - hw * 0.80f, cy - hh * 0.80f, cx + hw * 0.80f, cy + hh * 0.80f)
+        m2.setRectToRect(srcRect2, rect, Matrix.ScaleToFit.FILL)
+        set.rb.setLocalMatrix(m2)
+        ringPaintB.shader = set.rb
+        ringPaintB.alpha = alpha
+        canvas.drawRoundRect(ringRectB, ringRB, ringRB, ringPaintB)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
@@ -343,6 +454,19 @@ class GlassView(
                 haloPaint.alpha = (34f * f / k).toInt()
                 canvas.drawRoundRect(haloRect, radius + grow, radius + grow, haloPaint)
             }
+        }
+
+        if (f > 0.02f && lens) {
+            // jaśniejszy refleks podążający za zaznaczeniem
+            canvas.save()
+            canvas.clipPath(clipP)
+            val sx = width * (spec.x + 0.035f * Math.sin(tSec * 1.1).toFloat())
+            m2.setTranslate(sx, height * 0.18f)
+            specSh?.setLocalMatrix(m2)
+            specPaint.shader = specSh
+            specPaint.alpha = (f * 255f).toInt()
+            canvas.drawRect(rect, specPaint)
+            canvas.restore()
         }
 
         shinePaint.alpha = (255f * (0.55f + 0.45f * f)).toInt()
