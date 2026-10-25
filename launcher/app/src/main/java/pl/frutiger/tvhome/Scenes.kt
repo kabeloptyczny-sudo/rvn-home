@@ -6,122 +6,199 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
-import android.graphics.RectF
+import android.graphics.Rect
 import android.graphics.Shader
 import java.util.Random
 
-/** Wbudowane tapety w stylu Frutiger Aero, rysowane kodem (bez internetu, bez plików). */
+/**
+ * Wbudowane tapety: miękkie, świecące gradienty (aurora) w stylu iOS 26.
+ * Rysowane kodem w małej rozdzielczości, rozmywane i skalowane w górę (gładkie przejścia),
+ * na końcu delikatne ziarno przeciw pasmom na dużym ekranie.
+ */
 object Scenes {
 
-    private fun c(v: Long): Int = v.toInt()
+    const val COUNT = 5
+
+    private class Blob(val x: Float, val y: Float, val r: Float, val color: Long, val a: Int)
+
+    private class Ribbon(
+        val y: Float, val amp: Float, val freq: Float, val phase: Float,
+        val thick: Float, val c1: Long, val c2: Long, val a: Int
+    )
+
+    private class Spec(val bg0: Long, val bg1: Long, val blobs: List<Blob>, val ribbons: List<Ribbon>)
+
+    private val specs: List<Spec> = listOf(
+        // 0 Aurora
+        Spec(
+            0xFF050B2EL, 0xFF1A0F5CL,
+            listOf(
+                Blob(0.15f, 0.85f, 0.55f, 0xFF00D4FFL, 200),
+                Blob(0.85f, 0.15f, 0.50f, 0xFF8A2BFFL, 220),
+                Blob(0.55f, 0.55f, 0.35f, 0xFFFF3D9AL, 140),
+                Blob(0.95f, 0.95f, 0.45f, 0xFF00FFC8L, 150)
+            ),
+            listOf(
+                Ribbon(0.62f, 0.16f, 1.0f, 0.4f, 0.30f, 0xFF00E5FFL, 0xFFB44DFFL, 150),
+                Ribbon(0.35f, 0.12f, 1.4f, 2.1f, 0.22f, 0xFF7C4DFFL, 0xFFFF4DA6L, 130)
+            )
+        ),
+        // 1 Zachód słońca
+        Spec(
+            0xFF1B0B33L, 0xFF4A1250L,
+            listOf(
+                Blob(0.20f, 0.20f, 0.50f, 0xFFFF7A18L, 210),
+                Blob(0.80f, 0.80f, 0.55f, 0xFFFF2E63L, 210),
+                Blob(0.50f, 0.50f, 0.30f, 0xFFFFC857L, 120),
+                Blob(0.95f, 0.10f, 0.40f, 0xFF6A3DE8L, 200)
+            ),
+            listOf(
+                Ribbon(0.55f, 0.15f, 1.1f, 1.0f, 0.30f, 0xFFFFA24DL, 0xFFFF3D7FL, 150),
+                Ribbon(0.80f, 0.10f, 1.6f, 3.0f, 0.20f, 0xFF8A4DFFL, 0xFFFF7A18L, 120)
+            )
+        ),
+        // 2 Ocean
+        Spec(
+            0xFF021426L, 0xFF053B58L,
+            listOf(
+                Blob(0.10f, 0.50f, 0.50f, 0xFF00E5FFL, 190),
+                Blob(0.90f, 0.30f, 0.50f, 0xFF1E6BFFL, 210),
+                Blob(0.60f, 0.95f, 0.50f, 0xFF00FFA3L, 150),
+                Blob(0.40f, 0.05f, 0.30f, 0xFF7C4DFFL, 140)
+            ),
+            listOf(
+                Ribbon(0.50f, 0.18f, 0.9f, 0.2f, 0.32f, 0xFF00FFD5L, 0xFF2979FFL, 140),
+                Ribbon(0.30f, 0.10f, 1.5f, 1.8f, 0.20f, 0xFF18FFFFL, 0xFF7C4DFFL, 110)
+            )
+        ),
+        // 3 Grafit
+        Spec(
+            0xFF0B0C12L, 0xFF1B1D2BL,
+            listOf(
+                Blob(0.20f, 0.30f, 0.50f, 0xFF3A4BFFL, 150),
+                Blob(0.80f, 0.70f, 0.50f, 0xFFB14DFFL, 150),
+                Blob(0.60f, 0.15f, 0.30f, 0xFFFF6AA2L, 110)
+            ),
+            listOf(
+                Ribbon(0.60f, 0.14f, 1.0f, 0.7f, 0.28f, 0xFF4D6BFFL, 0xFFD14DFFL, 110)
+            )
+        ),
+        // 4 Szmaragd
+        Spec(
+            0xFF04140FL, 0xFF0A3B2BL,
+            listOf(
+                Blob(0.15f, 0.70f, 0.50f, 0xFF00E676L, 170),
+                Blob(0.85f, 0.25f, 0.50f, 0xFF00B8D4L, 190),
+                Blob(0.60f, 0.90f, 0.40f, 0xFFB2FF59L, 110)
+            ),
+            listOf(
+                Ribbon(0.55f, 0.16f, 1.1f, 1.4f, 0.30f, 0xFF1DE9B6L, 0xFF00B0FFL, 140),
+                Ribbon(0.30f, 0.10f, 1.7f, 0.3f, 0.18f, 0xFF76FF03L, 0xFF00E5FFL, 100)
+            )
+        )
+    )
+
+    private fun withAlpha(color: Long, a: Int): Int =
+        (color and 0x00FFFFFFL).toInt() or (a shl 24)
 
     fun render(index: Int, w: Int, h: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val cv = Canvas(bmp)
+        val spec = specs[index % specs.size]
+        val lw = 320
+        val lh = 180
+        val low = Bitmap.createBitmap(lw, lh, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(low)
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        val rnd = Random(1000L + index * 7919L)
-        when (index % 3) {
-            0 -> meadow(cv, p, w, h, rnd)
-            1 -> ocean(cv, p, w, h, rnd)
-            else -> sunset(cv, p, w, h, rnd)
-        }
-        bubbles(cv, p, w, h, rnd)
-        return bmp
-    }
 
-    private fun sky(cv: Canvas, p: Paint, w: Int, h: Int, top: Int, bottom: Int) {
-        p.shader = LinearGradient(0f, 0f, 0f, h * 0.75f, top, bottom, Shader.TileMode.CLAMP)
-        cv.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
-        p.shader = null
-    }
-
-    private fun glow(cv: Canvas, p: Paint, cx: Float, cy: Float, r: Float) {
-        p.shader = RadialGradient(
-            cx, cy, r, intArrayOf(c(0xDDFFFFFF), c(0x00FFFFFF)), null, Shader.TileMode.CLAMP
+        // tło
+        p.shader = LinearGradient(
+            0f, 0f, lw.toFloat(), lh.toFloat(),
+            spec.bg0.toInt(), spec.bg1.toInt(), Shader.TileMode.CLAMP
         )
-        cv.drawCircle(cx, cy, r, p)
+        cv.drawRect(0f, 0f, lw.toFloat(), lh.toFloat(), p)
         p.shader = null
-    }
 
-    private fun clouds(cv: Canvas, p: Paint, w: Int, h: Int, rnd: Random, count: Int) {
-        p.style = Paint.Style.FILL
-        p.color = c(0x66FFFFFF)
-        repeat(count) {
-            val cx = rnd.nextFloat() * w
-            val cy = rnd.nextFloat() * h * 0.35f
-            val s = 80f + rnd.nextFloat() * 120f
-            for (k in 0..4) {
-                val dy = if (k % 2 == 0) 0f else -s * 0.15f
-                cv.drawCircle(cx + k * s * 0.45f, cy + dy, s * (0.35f + 0.1f * (k % 3)), p)
-            }
-        }
-    }
-
-    private fun hill(
-        cv: Canvas, p: Paint, w: Int, h: Int,
-        baseY: Float, amp: Float, phase: Double, top: Int, bottom: Int
-    ) {
-        val path = Path()
-        path.moveTo(0f, h.toFloat())
-        var x = 0
-        while (x <= w) {
-            val y = (baseY + Math.sin(x.toDouble() / w * Math.PI * 2 + phase) * amp).toFloat()
-            if (x == 0) path.lineTo(0f, y) else path.lineTo(x.toFloat(), y)
-            x += 20
-        }
-        path.lineTo(w.toFloat(), h.toFloat())
-        path.close()
-        p.style = Paint.Style.FILL
-        p.shader = LinearGradient(0f, baseY - amp, 0f, h.toFloat(), top, bottom, Shader.TileMode.CLAMP)
-        cv.drawPath(path, p)
-        p.shader = null
-    }
-
-    private fun meadow(cv: Canvas, p: Paint, w: Int, h: Int, rnd: Random) {
-        sky(cv, p, w, h, c(0xFF1E88E5), c(0xFFB3E5FC))
-        glow(cv, p, w * 0.78f, h * 0.22f, h * 0.45f)
-        clouds(cv, p, w, h, rnd, 5)
-        hill(cv, p, w, h, h * 0.66f, h * 0.05f, 0.5, c(0xFF8BC34A), c(0xFF2E7D32))
-        hill(cv, p, w, h, h * 0.78f, h * 0.04f, 2.2, c(0xFF66BB6A), c(0xFF1B5E20))
-    }
-
-    private fun ocean(cv: Canvas, p: Paint, w: Int, h: Int, rnd: Random) {
-        sky(cv, p, w, h, c(0xFF00ACC1), c(0xFFE0F7FA))
-        glow(cv, p, w * 0.3f, h * 0.2f, h * 0.5f)
-        clouds(cv, p, w, h, rnd, 3)
-        hill(cv, p, w, h, h * 0.58f, h * 0.015f, 0.0, c(0xFF4DD0E1), c(0xFF006064))
-        hill(cv, p, w, h, h * 0.68f, h * 0.025f, 1.3, c(0xAA26C6DA), c(0xFF00838F))
-        hill(cv, p, w, h, h * 0.80f, h * 0.03f, 3.1, c(0x9900ACC1), c(0xFF004D5A))
-    }
-
-    private fun sunset(cv: Canvas, p: Paint, w: Int, h: Int, rnd: Random) {
-        sky(cv, p, w, h, c(0xFF5C6BC0), c(0xFFFFCC80))
-        glow(cv, p, w * 0.5f, h * 0.62f, h * 0.6f)
-        clouds(cv, p, w, h, rnd, 4)
-        hill(cv, p, w, h, h * 0.70f, h * 0.05f, 1.0, c(0xFF558B2F), c(0xFF1B3A1B))
-        hill(cv, p, w, h, h * 0.82f, h * 0.04f, 4.0, c(0xFF33691E), c(0xFF102A10))
-    }
-
-    private fun bubbles(cv: Canvas, p: Paint, w: Int, h: Int, rnd: Random) {
-        repeat(16) {
-            val r = 18f + rnd.nextFloat() * 70f
-            val cx = rnd.nextFloat() * w
-            val cy = rnd.nextFloat() * h
-            p.style = Paint.Style.FILL
+        // świetliste plamy
+        for (b in spec.blobs) {
+            val cx = b.x * lw
+            val cy = b.y * lh
+            val r = b.r * lw
             p.shader = RadialGradient(
-                cx - r * 0.3f, cy - r * 0.3f, r * 1.2f,
-                intArrayOf(c(0x77FFFFFF), c(0x14BFEFFF), c(0x33FFFFFF)),
-                floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP
+                cx, cy, r,
+                intArrayOf(withAlpha(b.color, b.a), withAlpha(b.color, 0)),
+                null, Shader.TileMode.CLAMP
             )
             cv.drawCircle(cx, cy, r, p)
-            p.shader = null
-            p.style = Paint.Style.STROKE
-            p.strokeWidth = 2f
-            p.color = c(0x88FFFFFF)
-            cv.drawCircle(cx, cy, r, p)
-            p.style = Paint.Style.FILL
-            p.color = c(0xAAFFFFFF)
-            cv.drawOval(RectF(cx - r * 0.55f, cy - r * 0.65f, cx - r * 0.1f, cy - r * 0.35f), p)
         }
+        p.shader = null
+
+        // faliste wstęgi światła
+        p.style = Paint.Style.STROKE
+        p.strokeCap = Paint.Cap.ROUND
+        for (rb in spec.ribbons) {
+            val path = Path()
+            var x = -10
+            var first = true
+            while (x <= lw + 10) {
+                val t = x.toDouble() / lw
+                val wave = rb.amp * Math.sin(t * rb.freq * 2.0 * Math.PI + rb.phase) +
+                        rb.amp * 0.4 * Math.sin(t * rb.freq * 4.6 * Math.PI + rb.phase * 1.7)
+                val y = ((rb.y + wave) * lh).toFloat()
+                if (first) {
+                    path.moveTo(x.toFloat(), y)
+                    first = false
+                } else {
+                    path.lineTo(x.toFloat(), y)
+                }
+                x += 4
+            }
+            p.strokeWidth = rb.thick * lh
+            p.shader = LinearGradient(
+                0f, 0f, lw.toFloat(), 0f,
+                withAlpha(rb.c1, rb.a), withAlpha(rb.c2, rb.a), Shader.TileMode.CLAMP
+            )
+            cv.drawPath(path, p)
+        }
+        p.shader = null
+        p.style = Paint.Style.FILL
+
+        // rozmycie (jedwabiste przejścia)
+        val px = IntArray(lw * lh)
+        low.getPixels(px, 0, lw, 0, 0, lw, lh)
+        Blur.boxBlur(px, lw, lh, 3, 2)
+        low.setPixels(px, 0, lw, 0, 0, lw, lh)
+
+        // winieta
+        p.shader = RadialGradient(
+            lw / 2f, lh / 2f, Math.hypot(lw.toDouble(), lh.toDouble()).toFloat() / 2f * 1.05f,
+            intArrayOf(0x00000000, 0x00000000, 0x73000000),
+            floatArrayOf(0f, 0.55f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        cv.drawRect(0f, 0f, lw.toFloat(), lh.toFloat(), p)
+        p.shader = null
+
+        // skalowanie w górę do docelowego rozmiaru
+        val big = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val bigCanvas = Canvas(big)
+        val up = Paint(Paint.FILTER_BITMAP_FLAG)
+        bigCanvas.drawBitmap(low, Rect(0, 0, lw, lh), Rect(0, 0, w, h), up)
+
+        // delikatne ziarno przeciw pasmom
+        val all = IntArray(w * h)
+        big.getPixels(all, 0, w, 0, 0, w, h)
+        val rnd = Random(77L + index)
+        for (i in all.indices) {
+            val n = rnd.nextInt(7) - 3
+            val c = all[i]
+            var r = ((c shr 16) and 255) + n
+            var g = ((c shr 8) and 255) + n
+            var b = (c and 255) + n
+            if (r < 0) r = 0 else if (r > 255) r = 255
+            if (g < 0) g = 0 else if (g > 255) g = 255
+            if (b < 0) b = 0 else if (b > 255) b = 255
+            all[i] = (c and 0xFF000000L.toInt()) or (r shl 16) or (g shl 8) or b
+        }
+        big.setPixels(all, 0, w, 0, 0, w, h)
+        return big
     }
 }
