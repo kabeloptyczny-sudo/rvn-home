@@ -20,4 +20,8 @@ WIDOK SZCZEGOLOWY GPW (naprawa):
 12. Stany: najpierw "ladowanie...", potem wykres albo "brak danych: <powod>" (HTTP 429, timeout, brak sieci, pusty wynik).
 13. Zaznaczenie zakladki i 1D/5D: miekka poswata, zadnego prostokata, pierwsza litera nie jest ucinana.
 14. Diagnostyka gdyby wykres nadal byl pusty: adb logcat -s GpwData  (kazde GET z URL, kod, dlugosc body, liczba punktow).
+15. Zakladki wig20/mwig40/swig80/TEN/GPP i przelacznik 1D/5D: poswata jest wewnatrz samej zakladki (miekki owal, brak prostokata), litery nie sa ucinane.
+16. Karta z wolumenem: pole "wolumen" tylko gdy sa niezerowe wolumeny (indeksy zwykle go nie maja - wtedy ukryte).
+17. Gdyby wykres nadal byl pusty: adb logcat -d -s GpwData > gpw.txt  (zobaczysz GET z URL, kod, dlugosc body, liczbe punktow i "wykres: rozmiar WxH").
+18. Test parsera bez Androida: launcher/tools/gpw-parser-test/run.sh <pliki y-*.json> (patrz naglowek skryptu).
 

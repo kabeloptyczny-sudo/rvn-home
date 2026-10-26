@@ -242,10 +242,15 @@ class YahooSource : QuoteSource {
         throw fail ?: EmptyData("pusty wynik")
     }
 
-    /** Parser odporny na brak indicators/timestamp i na null w timestamp/close/volume. Rzuca [EmptyData] z powodem. */
-    private fun chart(key: String, rg: String, iv: String, range: ChartRange): ChartData {
+    private fun chart(key: String, rg: String, iv: String, range: ChartRange): ChartData =
+        parseChart(yahooGet("$key.WA", rg, iv), key, rg, iv, range)
+
+    /**
+     * Czysty parser odpowiedzi Yahoo (bez sieci, testowalny na JVM): odporny na brak indicators/timestamp
+     * i na null w timestamp/close/volume. Rzuca [EmptyData] z krótkim powodem.
+     */
+    fun parseChart(body: String, key: String, rg: String, iv: String, range: ChartRange): ChartData {
         val tag = "chart $key $rg/$iv"
-        val body = yahooGet("$key.WA", rg, iv)
         val root = try {
             JSONObject(body)
         } catch (e: Exception) {

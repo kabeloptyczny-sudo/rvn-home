@@ -1,5 +1,6 @@
 package pl.frutiger.tvhome
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.DashPathEffect
@@ -10,6 +11,7 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.Handler
+import android.os.SystemClock
 import android.util.Log
 import android.text.SpannableStringBuilder
 import android.text.Spanned
@@ -161,6 +163,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     private var haveRange = false
     private var revealStart = 0f
     private var revealP = 1f
+    private var revealT0 = 0L
     private var revealMs = 600f
     private var initialReveal = false
     private var pulse = 0f
@@ -417,8 +420,8 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         }
         val newNx = xs[m - 1]
         when (mode) {
-            1 -> { revealStart = 0f; revealP = 0f; revealMs = 600f; initialReveal = true }
-            2 -> if (sameCtx) { revealStart = ox; revealP = 0f; revealMs = 350f; initialReveal = false } else { revealP = 1f }
+            1 -> { revealStart = 0f; revealP = 0f; revealMs = 600f; initialReveal = true; revealT0 = SystemClock.uptimeMillis() }
+            2 -> if (sameCtx) { revealStart = ox; revealP = 0f; revealMs = 350f; initialReveal = false; revealT0 = SystemClock.uptimeMillis() } else { revealP = 1f }
             else -> revealP = 1f
         }
         lastNx = newNx
@@ -443,6 +446,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
         super.onSizeChanged(w, h, ow, oh)
+        Log.d(GPW_TAG, "wykres: rozmiar " + w + "x" + h)
         pl = u * 0.3f
         pr = w - u * 0.3f
         pt = u * 1.0f
@@ -569,6 +573,12 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
             if (mm != null && width > 0) c.drawText(mm, width / 2f, height / 2f, pMsg)
             return
         }
+        // postęp rysowania liczony z zegara, nie z Tickera: wykres nie może utknąć na "0%" przy wstrzymanym Tickerze
+        if (revealP < 1f) {
+            val f = (SystemClock.uptimeMillis() - revealT0) / revealMs
+            if (f > revealP) revealP = if (f > 1f) 1f else f
+            if (revealP < 1f) postInvalidateOnAnimation()
+        }
         updateTip()
 
         // siatka (subtelna) + etykiety osi Y
@@ -668,6 +678,60 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
 }
 
 /**
+ * Zakładka (indeks / zakres) z własną, samodzielną poświatą: miękki radial gradient ([SelArt.glow], alfa spada do 0
+ * na krawędziach) rysowany WYŁĄCZNIE w granicach tego widoku. Padding daje miejsce na poświatę szerszą niż tekst,
+ * więc żaden rodzic (clipChildren / clipToPadding) nie może jej przyciąć do prostokąta ani uciąć liter.
+ * Zaznaczenie: skala 1.12, przygaszenie 70% -> 100%, 220 ms ease-out. Bez alokacji w onDraw.
+ */
+class TabText(ctx: Context, private val u: Float) : TextView(ctx) {
+    private var sel = 0f
+    private var from = 0f
+    private var to = 0f
+    private val glowDst = RectF()
+    private val bp = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val anim = ValueAnimator.ofFloat(0f, 1f)
+
+    init {
+        setWillNotDraw(false)
+        anim.duration = Sel.MS
+        anim.interpolator = Motion.EASE
+        anim.addUpdateListener {
+            apply(from + (to - from) * it.animatedFraction)
+        }
+    }
+
+    private fun apply(s: Float) {
+        sel = s
+        val z = 1f + (Sel.SCALE - 1f) * s
+        scaleX = z
+        scaleY = z
+        alpha = Sel.DIM + (1f - Sel.DIM) * s
+        invalidate()
+    }
+
+    fun select(on: Boolean, animate: Boolean) {
+        anim.cancel()
+        from = sel
+        to = if (on) 1f else 0f
+        if (!animate) apply(to) else anim.start()
+    }
+
+    override fun onDraw(c: Canvas) {
+        if (sel > 0.01f && width > 0) {
+            glowDst.set(0f, 0f, width.toFloat(), height.toFloat())
+            bp.alpha = (sel * 255f).toInt()
+            c.drawBitmap(SelArt.glow, SelArt.src, glowDst, bp)
+        }
+        super.onDraw(c)
+    }
+
+    override fun onDetachedFromWindow() {
+        anim.cancel()
+        super.onDetachedFromWindow()
+    }
+}
+
+/**
  * Widok szczegółowy GPW: ← → przełącza WIG20 / mWIG40 / sWIG80, OK przełącza 1D / 5D.
  * Odświeżanie co 15 s tylko gdy panel jest otwarty ([start]) i trwa sesja; poza sesją jedno pobranie.
  * Błąd/429: wykładniczy backoff, ostatnie dane z napisem "nieaktualne". Sieć na wspólnym executorze.
@@ -684,12 +748,11 @@ class GpwDetailView(
     private val nf = NumberFormat.getNumberInstance(pl)
     private val hm = SimpleDateFormat("HH:mm", pl)
     private val keys = GPW_CARDS.map { it.first }
-    private val tabs = ArrayList<TextView>()
-    private val rangeTabs = ArrayList<TextView>()
-    private val tabGlow = GlowLayer(ctx)
-    private val rangeGlow = GlowLayer(ctx)
+    private val tabs = ArrayList<TabText>()
+    private val rangeTabs = ArrayList<TabText>()
     private var tabsShown = false
-    private lateinit var headHost: FrameLayout
+    private lateinit var volBox: View
+    private val stVol = TextView(ctx)
     private val status = TextView(ctx)
     private val value = RollingValueView(ctx, u * 8.0f)
     private val change = TextView(ctx)
@@ -733,36 +796,29 @@ class GpwDetailView(
         head.gravity = Gravity.CENTER_VERTICAL
         head.clipChildren = false
         head.clipToPadding = false
+        val tabPadX = (u * 2.2f).toInt()
+        val tabPadY = (u * 1.1f).toInt()
         for ((key, name) in GPW_CARDS) {
             // indeksy małymi literami, spółki (TEN, GPP) wielkimi; zakładki zawsze widoczne, także bez danych
-            val t = label(if (GPW_TICKERS.contains(key)) name.uppercase(pl) else name.lowercase(pl), 2.4f, Pal.TEXT_DIM, "sans-serif-light")
-            t.setPadding((u * 0.5f).toInt(), (u * 0.3f).toInt(), (u * 0.5f).toInt(), (u * 0.3f).toInt())
-            val lp = LinearLayout.LayoutParams(-2, -2)
-            lp.rightMargin = (u * 2.4f).toInt()
-            head.addView(t, lp)
+            val t = TabText(ctx, u)
+            t.text = if (GPW_TICKERS.contains(key)) name.uppercase(pl) else name.lowercase(pl)
+            styleTab(t, 2.4f, tabPadX, tabPadY)
+            head.addView(t, LinearLayout.LayoutParams(-2, -2))
             tabs.add(t)
         }
         head.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
         for (name in arrayOf("1D", "5D")) {
-            val t = label(name, 1.7f, Pal.TEXT_DIM, "sans-serif-light")
-            t.setPadding((u * 0.5f).toInt(), (u * 0.3f).toInt(), (u * 0.5f).toInt(), (u * 0.3f).toInt())
-            val lp = LinearLayout.LayoutParams(-2, -2)
-            lp.leftMargin = (u * 1.0f).toInt()
-            head.addView(t, lp)
+            val t = TabText(ctx, u)
+            t.text = name
+            styleTab(t, 1.7f, tabPadX, tabPadY)
+            head.addView(t, LinearLayout.LayoutParams(-2, -2))
             rangeTabs.add(t)
         }
-        headHost = FrameLayout(ctx)
-        headHost.clipChildren = false
-        headHost.clipToPadding = false
-        // szeroka, miękka poświata (radial gradient z alfą do 0 na krawędziach), szersza niż tekst zakładki
-        tabGlow.spreadX = 1.5f; tabGlow.spreadY = 2.2f; tabGlow.biasY = 0f
-        rangeGlow.spreadX = 2.0f; rangeGlow.spreadY = 2.2f; rangeGlow.biasY = 0f
-        val tg = FrameLayout.LayoutParams(-1, -1)
-        tg.setMargins(-(u * 2.0f).toInt(), -(u * 2.0f).toInt(), -(u * 2.0f).toInt(), -(u * 2.0f).toInt())
-        headHost.addView(tabGlow, tg)
-        headHost.addView(rangeGlow, FrameLayout.LayoutParams(tg))
-        headHost.addView(head, FrameLayout.LayoutParams(-1, -2))
-        col.addView(headHost, LinearLayout.LayoutParams(-1, -2))
+        // wiersz szerszy o padding zakładek: tekst pierwszej zakładki i ostatniego przełącznika leży na linii treści
+        val hlp0 = LinearLayout.LayoutParams(-1, -2)
+        hlp0.leftMargin = -tabPadX
+        hlp0.rightMargin = -tabPadX
+        col.addView(head, hlp0)
 
         // wartość + zmiana + status
         val vrow = LinearLayout(ctx)
@@ -800,6 +856,8 @@ class GpwDetailView(
         addStat(stats, "max", stHigh)
         addStat(stats, "min", stLow)
         addStat(stats, "poprzednie zamknięcie", stPrev)
+        volBox = addStat(stats, "wolumen", stVol)
+        volBox.visibility = View.GONE        // sekcja wolumenu tylko gdy są niezerowe dane
         val stp = LinearLayout.LayoutParams(-1, -2)
         stp.topMargin = (u * 1.2f).toInt()
         col.addView(stats, stp)
@@ -844,7 +902,17 @@ class GpwDetailView(
         return t
     }
 
-    private fun addStat(parent: LinearLayout, name: String, v: TextView) {
+    private fun styleTab(t: TabText, size: Float, padX: Int, padY: Int) {
+        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * size)
+        t.setTextColor(Pal.TEXT)
+        t.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        t.includeFontPadding = false
+        t.maxLines = 1
+        t.setPadding(padX, padY, padX, padY)
+        t.alpha = Sel.DIM
+    }
+
+    private fun addStat(parent: LinearLayout, name: String, v: TextView): View {
         val box = LinearLayout(context)
         box.orientation = LinearLayout.VERTICAL
         box.addView(label(name, 1.0f, Pal.TEXT_DIM, "sans-serif-light"))
@@ -858,6 +926,7 @@ class GpwDetailView(
         lp.topMargin = (u * 0.5f).toInt()
         box.addView(v, lp)
         parent.addView(box, LinearLayout.LayoutParams(0, -2, 1f))
+        return box
     }
 
     // ------------------------------------------------------------ klawisze
@@ -886,30 +955,12 @@ class GpwDetailView(
         switchTo()
     }
 
-    /** Zaznaczona zakładka: skala 1.12, przygaszenie 70% -> 100% (220 ms, ease-out), poświata przesuwa się pod nią. */
-    private fun pick(t: TextView, on: Boolean, anim: Boolean) {
-        val z = if (on) Sel.SCALE else 1f
-        val a = if (on) 1f else Sel.DIM
-        t.animate().cancel()
-        if (!anim) {
-            t.scaleX = z; t.scaleY = z; t.alpha = a
-            return
-        }
-        t.animate().scaleX(z).scaleY(z).alpha(a).setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
-    }
-
+    /** Zaznaczona zakładka: skala 1.12, przygaszenie 70% -> 100% i miękka poświata wewnątrz zakładki (220 ms, ease-out). */
     private fun updateTabs() {
         val anim = tabsShown
-        for (i in tabs.indices) {
-            pick(tabs[i], i == idx, anim)
-            tabs[i].setTextColor(Pal.TEXT)
-            tabs[i].typeface = Typeface.create(if (i == idx) "sans-serif" else "sans-serif-light", Typeface.NORMAL)
-        }
-        pick(rangeTabs[0], range == ChartRange.D1, anim)
-        pick(rangeTabs[1], range == ChartRange.D5, anim)
-        for (t in rangeTabs) t.setTextColor(Pal.TEXT)
-        tabGlow.focusOn(headHost, tabs[idx])
-        rangeGlow.focusOn(headHost, rangeTabs[if (range == ChartRange.D1) 0 else 1])
+        for (i in tabs.indices) tabs[i].select(i == idx, anim)
+        rangeTabs[0].select(range == ChartRange.D1, anim)
+        rangeTabs[1].select(range == ChartRange.D5, anim)
         tabsShown = true
     }
 
@@ -946,6 +997,7 @@ class GpwDetailView(
             chart.clear()
             chart.setMessage("ładowanie...")
             stOpen.text = "–"; stHigh.text = "–"; stLow.text = "–"; stPrev.text = "–"
+            volBox.visibility = View.GONE
             refreshStatus()
         }
         request(true)
@@ -1043,6 +1095,12 @@ class GpwDetailView(
         stHigh.text = nf.format(cd.high)
         stLow.text = nf.format(cd.low)
         stPrev.text = nf.format(cd.prev)
+        if (cd.hasVol) {
+            stVol.text = fmtVolume(cd.volToday)
+            volBox.visibility = View.VISIBLE
+        } else {
+            volBox.visibility = View.GONE
+        }
 
         shownCtx = ctxKey
         shownPrice = cd.price
