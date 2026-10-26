@@ -3,6 +3,7 @@ package pl.frutiger.tvhome
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Matrix
@@ -24,6 +25,8 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.ExecutorService
 
 /**
@@ -342,17 +345,68 @@ class NowPlayingController(
         val art = meta.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: meta.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: meta.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+        // gdy brak bitmapy (np. Spotify TV): okładka z URI (https lub content), pobierana poza wątkiem UI
+        val artUri: String? = if (art != null) null
+        else meta.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
+            ?: meta.getString(MediaMetadata.METADATA_KEY_ART_URI)
+            ?: meta.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
         val pkg = c.packageName
-        val key = pkg + "\u0001" + t + "\u0001" + a + "\u0001" + (if (art != null) System.identityHashCode(art) else 0)
+        val key = pkg + "\u0001" + t + "\u0001" + a + "\u0001" + (if (art != null) System.identityHashCode(art) else 0) + "\u0001" + (artUri ?: "")
         if (key == shownKey && panel.active) return
         shownKey = key
         val my = ++token
         worker.execute {
-            val cov = if (art != null) square(art, coverPx) else null
+            val cov = if (art != null) square(art, coverPx) else if (artUri != null) fromUri(artUri) else null
             ui.post {
                 if (my == token && running) panel.show(t, a, cov, pkg)
             }
         }
+    }
+
+    /** Okładka z URI: tylko https lub content://, limit 3 MB, dekodowanie z próbkowaniem (raz, na executorze). */
+    private fun fromUri(uri: String): Bitmap? = try {
+        val bytes: ByteArray? = when {
+            uri.startsWith("https://") -> {
+                val con = URL(uri).openConnection() as HttpURLConnection
+                try {
+                    con.connectTimeout = 6000
+                    con.readTimeout = 6000
+                    con.setRequestProperty("User-Agent", Net.UA)
+                    if (con.responseCode != 200) null else con.inputStream.use { readCapped(it) }
+                } finally {
+                    con.disconnect()
+                }
+            }
+            uri.startsWith("content://") -> ctx.contentResolver.openInputStream(android.net.Uri.parse(uri))?.use { readCapped(it) }
+            else -> null
+        }
+        if (bytes == null) null else {
+            val o = BitmapFactory.Options()
+            o.inJustDecodeBounds = true
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
+            var sample = 1
+            while (o.outWidth / (sample * 2) >= coverPx && o.outHeight / (sample * 2) >= coverPx) sample *= 2
+            val d = BitmapFactory.Options()
+            d.inSampleSize = sample
+            val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, d)
+            if (raw == null) null else square(raw, coverPx)
+        }
+    } catch (e: Throwable) {
+        null
+    }
+
+    private fun readCapped(i: java.io.InputStream): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = i.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > 3_000_000) return null
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 
     /** Kadr do kwadratu i zmniejszenie do rozmiaru panelu (raz, poza wątkiem UI). */

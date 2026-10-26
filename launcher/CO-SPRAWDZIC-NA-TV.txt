@@ -13,3 +13,4 @@ CO SPRAWDZIC NA TV (TCL 43C69B i Sony XG85):
 7. Poswata w doku nie jest ucieta przy krawedziach szkla; w siatce brak poziomych "ciec" przy przewijaniu.
 8. Plynnosc (zwlaszcza Sony): przytrzymana strzalka w doku i siatce; wyjscie z aplikacji i powrot.
 9. Uklad: dok max 60% x 22%, widzet GPW i panel max 35% x 35%.
+10. Okladka w panelu odtwarzania: Spotify/YouTube Music - jest okladka (takze gdy aplikacja podaje tylko URI); bez okladki widoczna nuta, bez crashy.
