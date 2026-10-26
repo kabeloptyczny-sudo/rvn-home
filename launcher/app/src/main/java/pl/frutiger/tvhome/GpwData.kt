@@ -159,7 +159,7 @@ class YahooSource : QuoteSource {
     }
 
     override fun fetchChart(key: String, range: ChartRange): ChartData? {
-        val tries = if (range == ChartRange.D1) listOf("1d" to "1m", "1d" to "5m") else listOf("5d" to "15m")
+        val tries = if (range == ChartRange.D1) listOf("1d" to "5m") else listOf("5d" to "15m")
         var best: ChartData? = null
         for ((rg, iv) in tries) {
             val cd = try {
@@ -167,7 +167,7 @@ class YahooSource : QuoteSource {
             } catch (e: HttpFail) {
                 if (e.code == 400 || e.code == 404) null else throw e
             }
-            if (cd != null && cd.t.size >= 5) return cd
+            if (cd != null && cd.t.size >= 2) return cd
             if (cd != null && best == null) best = cd
         }
         return best
@@ -250,7 +250,7 @@ class YahooSource : QuoteSource {
 }
 
 /**
- * Odświeżanie notowań (indeksy + TEN, GPP) co 5 min dla widżetu i dolnego paska sceny bezczynności.
+ * Odświeżanie notowań (indeksy + TEN, GPP): aktywny 15s (sesja 9:00-17:35), idle 60s, poza sesją 1x + "ostatnia sesja".
  * Jeden wspólny executor aplikacji. Błąd/429 -> ostatnie dane z SharedPreferences z etykietą "nieaktualne".
  */
 class GpwController(
@@ -263,18 +263,22 @@ class GpwController(
     private val prefs: SharedPreferences = ctx.getSharedPreferences("gpw", Context.MODE_PRIVATE)
     private val tz = TimeZone.getTimeZone("Europe/Warsaw")
     private val keys: List<String> = GPW_CARDS.map { it.first }
-    private val period = 300_000L
+    private val activePeriod = 15_000L
+    private val idlePeriod = 60_000L
     private val data = HashMap<String, Quote>()
     private var running = false
     private var busy = false
     private var stale = false
     private var lastOk = 0L
+    private var refreshedOnce = false
 
     private val loop = object : Runnable {
         override fun run() {
             if (!running) return
             refresh()
-            ui.postDelayed(this, period)
+            val inSession = GpwClock.inSession()
+            val nextPeriod = if (inSession) activePeriod else idlePeriod
+            ui.postDelayed(this, nextPeriod)
         }
     }
 
@@ -286,6 +290,9 @@ class GpwController(
     fun start() {
         running = true
         ui.removeCallbacks(loop)
+        refreshedOnce = false
+        val inSession = GpwClock.inSession()
+        val period = if (inSession) activePeriod else idlePeriod
         val age = System.currentTimeMillis() - lastOk
         ui.postDelayed(loop, Math.max(300L, period - age))
     }
@@ -297,6 +304,8 @@ class GpwController(
 
     private fun refresh() {
         if (busy) return
+        val inSession = GpwClock.inSession()
+        if (!inSession && refreshedOnce) return
         busy = true
         worker.execute {
             val got = HashMap<String, Quote>()
@@ -317,6 +326,7 @@ class GpwController(
                     if (!failed) {
                         lastOk = System.currentTimeMillis()
                         stale = false
+                        refreshedOnce = true
                     } else stale = true
                     save()
                 } else if (failed) {

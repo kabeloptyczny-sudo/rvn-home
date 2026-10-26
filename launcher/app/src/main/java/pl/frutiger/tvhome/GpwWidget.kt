@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -129,7 +130,12 @@ class GpwWidget(ctx: Context, private val u: Float) :
         var any = false
         clockFmt.timeZone = tz
         val time = if (newest > 0L) clockFmt.format(Date(newest)) else ""
-        status.text = if (stale) "nieaktualne" + (if (time.isNotEmpty()) " · $time" else "") else "opóźnione"
+        val inSession = GpwClock.inSession()
+        status.text = when {
+            stale -> "nieaktualne" + (if (time.isNotEmpty()) " · $time" else "")
+            !inSession && time.isNotEmpty() -> "ostatnia sesja · $time"
+            else -> "opóźnione"
+        }
         for ((k, rv) in rows) {
             val q = data[k]
             if (q == null) {

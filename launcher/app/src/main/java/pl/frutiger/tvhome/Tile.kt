@@ -38,6 +38,7 @@ class TileView(
     var onBlur: ((TileView) -> Unit)? = null
     private val fx = SelFx(this, u)
     private val sheen = View(ctx)
+    private val glassBorder = View(ctx)
 
     init {
         orientation = VERTICAL
@@ -50,13 +51,24 @@ class TileView(
         id = View.generateViewId()
 
         val w = (wU * u).toInt()
-        val h = if (dock) w else (wU * u * 9f / 16f).toInt()
-        val r = if (dock) w * 0.22f else u * 1.0f
+        val h = if (dock) (w * 2 / 3) else (wU * u * 9f / 16f).toInt()
+        val r = if (dock) w * 0.20f else u * 1.0f
         val rest = if (dock) Sel.DOCK_DIM else Sel.DIM
 
         val bgd = GradientDrawable()
-        bgd.setColor(Pal.TILE)
-        bgd.cornerRadius = r
+        if (dock) {
+            bgd.setColor(0x4D1B2027)
+            bgd.cornerRadius = r
+            glassBorder.background = GradientDrawable().apply {
+                setColor(0x00000000)
+                setStroke((u * 0.3f).toInt(), 0x2EFFFFFF)
+                cornerRadius = r
+            }
+            card.addView(glassBorder, FrameLayout.LayoutParams(-1, -1))
+        } else {
+            bgd.setColor(Pal.TILE)
+            bgd.cornerRadius = r
+        }
         card.background = bgd
         card.outlineProvider = ViewOutlineProvider.BACKGROUND
         card.clipToOutline = true

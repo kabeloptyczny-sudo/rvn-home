@@ -160,8 +160,8 @@ class MainActivity : Activity() {
         // zegar + data + pogoda + życzenie (lewy górny róg)
         clock = ClockView(this, u, 1f, true)
         val hlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
-        hlp.leftMargin = uu(6f)
-        hlp.topMargin = (Backdrop.screenH * 0.075f).toInt()
+        hlp.leftMargin = uu(4f)
+        hlp.topMargin = (Backdrop.screenH * 0.05f).toInt()
         home.addView(clock, hlp)
 
         // prawy górny róg: widżet GPW, pod nim panel "teraz odtwarzane" (oba dopasowane do zawartości)
@@ -184,11 +184,11 @@ class MainActivity : Activity() {
         nlp.topMargin = uu(1.8f)
         pane.addView(np, nlp)
         val plp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
-        plp.rightMargin = uu(6f)                                  // prawy brzeg w 94% szerokości
-        plp.topMargin = (Backdrop.screenH * 0.075f).toInt()       // górny brzeg w 7,5% wysokości
+        plp.rightMargin = uu(4f)                                  // prawy brzeg w 96% szerokości
+        plp.topMargin = (Backdrop.screenH * 0.05f).toInt()       // górny brzeg w 5% wysokości
         home.addView(pane, plp)
 
-        // dok: pełna szerokość, bez tła/ramki/szkła - ikony pływają na scenerii; równe odstępy, padding boczny 48 dp
+        // dok: pełna szerokość na samym dole, bez tła/ramki/szkła - ikony pływają na scenerii; równe odstępy, padding boczny 48 dp
         val dp = resources.displayMetrics.density
         rowScroll = HorizontalScrollView(this)
         rowScroll.isHorizontalScrollBarEnabled = false
@@ -209,7 +209,7 @@ class MainActivity : Activity() {
         rowHost.addView(row, FrameLayout.LayoutParams(MATCH, WRAP))
         rowScroll.addView(rowHost, FrameLayout.LayoutParams(MATCH, WRAP))
         val dlp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM)
-        dlp.bottomMargin = (Backdrop.screenH * 0.04f).toInt()
+        dlp.bottomMargin = (Backdrop.screenH * 0.02f).toInt()
         home.addView(rowScroll, dlp)
 
         // scena bezczynności (nad grupą normalną, początkowo ukryta)

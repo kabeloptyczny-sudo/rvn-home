@@ -63,8 +63,8 @@ class SparklineView(context: Context, strokePx: Float) : View(context) {
             return
         }
         has = true
-        var mn = data[0]
-        var mx = data[0]
+        var mn = Float.MAX_VALUE
+        var mx = -Float.MAX_VALUE
         for (v in data) {
             if (v < mn) mn = v
             if (v > mx) mx = v
@@ -73,15 +73,16 @@ class SparklineView(context: Context, strokePx: Float) : View(context) {
         val w = width - 2f * pad
         val h = height - 2f * pad
         val range = mx - mn
-        val lo = mn - range * 0.05f
-        val span = (mx + range * 0.05f) - lo
+        val lo = if (range <= 0f) mn - 0.05f * Math.abs(mn) else mn - range * 0.05f
+        val hi = if (range <= 0f) mx + 0.05f * Math.abs(mx) else mx + range * 0.05f
+        val span = hi - lo
         val useT = times.size == n && times[n - 1] > times[0]
         val t0 = if (useT) times[0] else 0L
         val tSpan = if (useT) (times[n - 1] - times[0]).toDouble() else (n - 1).toDouble()
         for (i in 0 until n) {
             val fx = if (useT) (times[i] - t0) / tSpan else i / tSpan
             val x = pad + w * fx.toFloat()
-            val y = if (range <= 0f) pad + h / 2f else pad + h * (1f - (data[i] - lo) / span)
+            val y = if (span <= 0f) pad + h / 2f else pad + h * (1f - (data[i] - lo) / span)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
     }
