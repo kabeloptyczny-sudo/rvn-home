@@ -1,0 +1,27 @@
+DOSTEP DO "TERAZ ODTWARZANE" (jednorazowo, po instalacji):
+  adb shell cmd notification allow_listener pl.frutiger.tvhome/pl.frutiger.tvhome.MediaListener
+(gdyby komenda byla niedostepna: ustawienia TV > dostep do powiadomien > RVN Home)
+Cofniecie: adb shell cmd notification disallow_listener pl.frutiger.tvhome/pl.frutiger.tvhome.MediaListener
+
+CO SPRAWDZIC NA TV (TCL 43C69B i Sony XG85):
+1. Pod zegarem: data malymi literami, pogoda (np. "12°, pochmurno"), zyczenie wg pory. Bez sieci linia pogody znika.
+2. Panel "teraz odtwarzane" pod widzetem GPW: ukryty bez muzyki; po odtworzeniu w Spotify okladka, tytul, wykonawca; zmiana utworu = fade; pauza/stop = panel znika.
+3. Dlugi tytul: wielokropek, panel nie przekracza ok. 35% szerokosci ekranu.
+4. Dok: skala 1.12, przygaszenie 70% -> 100%, miekka poswata plynnie przesuwa sie do nastepnego kafelka, jasny odblask u gory, cien pod spodem, nazwa pod kafelkiem. Zadnych ramek i prostokatnych tel.
+5. To samo: ikona Aplikacje, widzet GPW, panel odtwarzania, zakladki indeksow i 1D/5D w widoku GPW, siatka aplikacji, lista wejsc TV.
+6. Strzalki gora/dol: dok -> panel odtwarzania -> widzet GPW i z powrotem (bez panelu widzet laczy sie prosto z dokiem).
+7. Poswata w doku nie jest ucieta przy krawedziach szkla; w siatce brak poziomych "ciec" przy przewijaniu.
+8. Plynnosc (zwlaszcza Sony): przytrzymana strzalka w doku i siatce; wyjscie z aplikacji i powrot.
+9. Uklad: dok max 60% x 22%, widzet GPW i panel max 35% x 35%.
+10. Okladka w panelu odtwarzania: Spotify/YouTube Music - jest okladka (takze gdy aplikacja podaje tylko URI); bez okladki widoczna nuta, bez crashy.
+
+WIDOK SZCZEGOLOWY GPW (naprawa):
+11. Zakladki: wig20, mwig40, swig80, TEN, GPP - wszystkie zawsze widoczne (gora/dol przelacza, takze bez danych). Domyslnie 1D.
+12. Stany: najpierw "ladowanie...", potem wykres albo "brak danych: <powod>" (HTTP 429, timeout, brak sieci, pusty wynik).
+13. Zaznaczenie zakladki i 1D/5D: miekka poswata, zadnego prostokata, pierwsza litera nie jest ucinana.
+14. Diagnostyka gdyby wykres nadal byl pusty: adb logcat -s GpwData  (kazde GET z URL, kod, dlugosc body, liczba punktow).
+15. Zakladki wig20/mwig40/swig80/TEN/GPP i przelacznik 1D/5D: poswata jest wewnatrz samej zakladki (miekki owal, brak prostokata), litery nie sa ucinane.
+16. Karta z wolumenem: pole "wolumen" tylko gdy sa niezerowe wolumeny (indeksy zwykle go nie maja - wtedy ukryte).
+17. Gdyby wykres nadal byl pusty: adb logcat -d -s GpwData > gpw.txt  (zobaczysz GET z URL, kod, dlugosc body, liczbe punktow i "wykres: rozmiar WxH").
+18. Test parsera bez Androida: launcher/tools/gpw-parser-test/run.sh <pliki y-*.json> (patrz naglowek skryptu).
+
