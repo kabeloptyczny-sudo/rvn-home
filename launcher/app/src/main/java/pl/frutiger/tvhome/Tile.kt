@@ -1,10 +1,13 @@
 package pl.frutiger.tvhome
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
@@ -16,10 +19,62 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 
+/** Wspólne zaznaczenie: skala 1.12 w 200 ms (ease-out), przygaszenie 70% -> 100%, nazwa (fade 150 ms). */
+object Sel {
+    const val SCALE = 1.12f
+    const val DIM = 0.7f
+    const val MS = 200L
+    const val LABEL_MS = 150L
+}
+
+/**
+ * Bardzo delikatne, miękkie światło pod zaznaczonym elementem (radialny gradient, bez ramek i prostokątów).
+ * Jeden animator i jeden shader na cały czas życia; w draw() brak alokacji.
+ */
+class SoftGlow(private val host: View) {
+    private var a = 0f
+    private var from = 0f
+    private var to = 0f
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val anim = ValueAnimator.ofFloat(0f, 1f)
+
+    init {
+        p.shader = RadialGradient(
+            0f, 0f, 1f,
+            intArrayOf(0x30EFE8DA, 0x14EFE8DA, 0x00EFE8DA), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP
+        )
+        anim.duration = Sel.MS
+        anim.interpolator = Motion.EASE
+        anim.addUpdateListener {
+            a = from + (to - from) * it.animatedFraction
+            val m = Math.max(host.width, host.height) / 2
+            host.invalidate(-m, -m, host.width + m, host.height + m)
+        }
+    }
+
+    fun set(on: Boolean) {
+        anim.cancel()
+        from = a
+        to = if (on) 1f else 0f
+        anim.start()
+    }
+
+    fun cancel() = anim.cancel()
+
+    fun draw(c: Canvas, cx: Float, cy: Float, rx: Float, ry: Float) {
+        if (a <= 0.01f) return
+        p.alpha = (a * 255f).toInt()
+        c.save()
+        c.translate(cx, cy)
+        c.scale(rx, ry)
+        c.drawCircle(0f, 0f, 1f, p)
+        c.restore()
+    }
+}
+
 /**
  * Jednolity, zaokrąglony kafelek 16:9. Bez ramek i teł zaznaczenia: niezaznaczony przygaszony (70%), zaznaczony
- * w pełnym kolorze, skala 1.12 (220 ms, ease-out), jasny odblask górnej krawędzi, miękki cień i nazwa pod spodem.
- * Poświata jest wspólna dla kontenera ([GlowLayer]) i przesuwa się między kafelkami.
+ * w pełnym kolorze, skala 1.12 (200 ms, ease-out), pod nim nazwa (fade 150 ms) i bardzo delikatne miękkie światło.
  */
 class TileView(
     ctx: Context,
@@ -27,18 +82,14 @@ class TileView(
     wU: Float,
     label: String,
     content: View,
-    private val showLabel: Boolean = true,
-    /** Ikona doku: kwadrat (promień 22%), alfa 85% w spoczynku, bez cienia i odblasku; nazwa szersza niż ikona. */
-    private val dock: Boolean = false
+    private val showLabel: Boolean = true
 ) : LinearLayout(ctx) {
 
     val card = FrameLayout(ctx)
     val labelView = TextView(ctx)
     var onFocus: ((TileView) -> Unit)? = null
     var onBlur: ((TileView) -> Unit)? = null
-    private val fx = SelFx(this, u)
-    private val sheen = View(ctx)
-    private val glassBorder = View(ctx)
+    private val glow = SoftGlow(this)
 
     init {
         orientation = VERTICAL
@@ -51,40 +102,23 @@ class TileView(
         id = View.generateViewId()
 
         val w = (wU * u).toInt()
-        val h = if (dock) (w * 2 / 3) else (wU * u * 9f / 16f).toInt()
-        val r = if (dock) w * 0.20f else u * 1.0f
-        val rest = if (dock) Sel.DOCK_DIM else Sel.DIM
+        val h = (wU * u * 9f / 16f).toInt()
+        val r = u * 1.0f
 
         val bgd = GradientDrawable()
-        if (dock) {
-            bgd.setColor(0x4D1B2027)
-            bgd.cornerRadius = r
-            glassBorder.background = GradientDrawable().apply {
-                setColor(0x00000000)
-                setStroke((u * 0.3f).toInt(), 0x2EFFFFFF)
-                cornerRadius = r
-            }
-            card.addView(glassBorder, FrameLayout.LayoutParams(-1, -1))
-        } else {
-            bgd.setColor(Pal.TILE)
-            bgd.cornerRadius = r
-        }
+        bgd.setColor(Pal.TILE)
+        bgd.cornerRadius = r
         card.background = bgd
         card.outlineProvider = ViewOutlineProvider.BACKGROUND
         card.clipToOutline = true
-        card.alpha = rest
+        card.alpha = Sel.DIM
         card.addView(content, FrameLayout.LayoutParams(-1, -1))
-
-        // wąski, jasny odblask na górnej krawędzi (gradient 20% -> 0)
-        sheen.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x33FFFFFF, 0x00FFFFFF))
-        sheen.alpha = 0f
-        if (!dock) card.addView(sheen, FrameLayout.LayoutParams(-1, (h * 0.30f).toInt(), Gravity.TOP))
         addView(card, LayoutParams(w, h))
 
         labelView.text = label
         labelView.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 1.15f)
         labelView.setTextColor(Pal.TEXT)
-        labelView.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        labelView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
         labelView.maxLines = 1
         labelView.ellipsize = android.text.TextUtils.TruncateAt.END
         labelView.gravity = Gravity.CENTER
@@ -92,29 +126,16 @@ class TileView(
         labelView.letterSpacing = 0.02f
         if (!showLabel) labelView.visibility = View.GONE
         val lp = LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT)
-        if (dock) {
-            // nazwa może być szersza od ikony, ale nie zmienia szerokości kafelka (ujemne marginesy)
-            val ex = (w * 0.45f).toInt()
-            lp.width = w + 2 * ex
-            lp.leftMargin = -ex
-            lp.rightMargin = -ex
-            labelView.setShadowLayer(u * 0.35f, 0f, u * 0.08f, 0x99000000.toInt())
-        }
         lp.topMargin = (u * 0.9f).toInt()
         addView(labelView, lp)
-
-        fx.onStep = SelStep { s ->
-            val z = 1f + (Sel.SCALE - 1f) * s
-            card.scaleX = z
-            card.scaleY = z
-            card.alpha = rest + (1f - rest) * s
-            sheen.alpha = s
-        }
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        fx.set(gainFocus)
+        val z = if (gainFocus) Sel.SCALE else 1f
+        card.animate().cancel()
+        card.animate().scaleX(z).scaleY(z).alpha(if (gainFocus) 1f else Sel.DIM)
+            .setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
         if (showLabel) {
             // nazwa zjeżdża razem z dolną krawędzią powiększonej karty
             val dy = if (gainFocus) card.height * (Sel.SCALE - 1f) / 2f else 0f
@@ -122,23 +143,24 @@ class TileView(
             labelView.animate().alpha(if (gainFocus) 1f else 0f).translationY(dy)
                 .setDuration(Sel.LABEL_MS).setInterpolator(Motion.EASE).start()
         }
+        glow.set(gainFocus)
         if (gainFocus) onFocus?.invoke(this) else onBlur?.invoke(this)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        // miękki cień pod kartą (przed dziećmi, więc karta i napis leżą na nim)
-        if (!dock) fx.drawShadowAt(canvas, card.left.toFloat(), card.top.toFloat(), card.right.toFloat(), card.bottom.toFloat())
+        // światło pod kartą (rysowane przed dziećmi, więc kafelek i napis leżą na nim)
+        glow.draw(canvas, width / 2f, card.height * (0.5f + Sel.SCALE / 2f), card.width * 0.62f, card.height * 0.95f)
         super.dispatchDraw(canvas)
     }
 
     override fun onDetachedFromWindow() {
-        fx.cancel()
+        glow.cancel()
         super.onDetachedFromWindow()
     }
 }
 
 /** Ikona "TV": ramka ekranu + podstawka, jednolita linia w kolorze piasku. */
-class TvGlyphView(context: Context, private val k: Float = 1.25f) : View(context) {
+class TvGlyphView(context: Context) : View(context) {
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val r = RectF()
 
@@ -149,7 +171,7 @@ class TvGlyphView(context: Context, private val k: Float = 1.25f) : View(context
 
     override fun onDraw(canvas: Canvas) {
         val hh = height.toFloat()
-        val sw = Math.min(width, height) * k
+        val sw = Math.min(width, height) * 1.25f
         val sh = sw * 0.58f
         p.strokeWidth = Math.max(2f, hh * 0.035f)
         val l = (width - sw) / 2f

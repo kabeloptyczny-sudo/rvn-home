@@ -33,9 +33,6 @@ open class FrostPanel(
     var maxWFrac = 1f
     var maxHFrac = 1f
 
-    /** Opcjonalne zaznaczenie (cień pod szkłem, poświata i odblask górnej krawędzi nad szkłem, pod treścią). */
-    var fx: SelFx? = null
-
     private val cache = arrayOfNulls<Sh>(3)
     private var cacheNext = 0
     private var shCur: Sh? = null
@@ -115,13 +112,11 @@ open class FrostPanel(
         rect.set(0f, 0f, w.toFloat(), h.toFloat())
         val e = edgePx / 2f
         edgeRect.set(e, e, w - e, h - e)
-        fx?.layout(w, h, radius)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (width <= 0 || height <= 0) return
-        fx?.drawShadow(canvas, width.toFloat(), height.toFloat())
         getLocationInWindow(loc)
         if (shCur == null && Backdrop.cur != null) rebind()
         val p = shPrev
@@ -148,11 +143,6 @@ open class FrostPanel(
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        val f = fx
-        if (f != null) {
-            f.drawGlow(canvas, width.toFloat(), height.toFloat())
-            f.drawSheen(canvas)
-        }
         super.dispatchDraw(canvas)
         if (edgePx > 0f && edge != 0) {
             val r = Math.max(0f, radius - edgePx / 2f)
