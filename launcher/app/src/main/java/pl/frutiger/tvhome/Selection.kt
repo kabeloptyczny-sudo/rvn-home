@@ -23,6 +23,8 @@ object Sel {
     const val MS = 220L
     const val FADE_MS = 250L
     const val LABEL_MS = 150L
+    /** Ikony doku w spoczynku (zaznaczona: 1.0). */
+    const val DOCK_DIM = 0.85f
 }
 
 /** Krok animacji zaznaczenia (prymitywny float: bez boxingu i alokacji w pętli animacji). */

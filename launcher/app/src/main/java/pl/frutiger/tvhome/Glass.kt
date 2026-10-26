@@ -143,12 +143,12 @@ class WallpaperView(context: Context) : View(context) {
 }
 
 /** Ikona "Aplikacje": siatka 3x3 zaokrąglonych kwadratów (jednolity piasek). */
-class GlyphView(context: Context) : View(context) {
+class GlyphView(context: Context, private val k: Float = 0.46f) : View(context) {
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
 
     override fun onDraw(canvas: Canvas) {
-        val total = Math.min(width, height) * 0.46f
+        val total = Math.min(width, height) * k
         val cell = total / 3f
         val gap = cell * 0.22f
         val sq = cell - gap

@@ -89,7 +89,8 @@ class MainActivity : Activity() {
 
     /** Liczba kafelków przed ulubionymi w doku (kafelek "TV"). */
     private val lead = 1
-    private val dockTileW = 6.6f
+    /** Ikona doku ok. 96 dp (w jednostkach u). */
+    private fun dockW(): Float = 96f * resources.displayMetrics.density / u
     private val gridTileW = 11.2f
 
     private val rotateTask = object : Runnable {
@@ -187,30 +188,29 @@ class MainActivity : Activity() {
         plp.topMargin = (Backdrop.screenH * 0.075f).toInt()       // górny brzeg w 7,5% wysokości
         home.addView(pane, plp)
 
-        // dok: wąska "wyspa" dopasowana do zawartości, wyśrodkowana, ciemne matowe szkło + obwódka 1 px
-        val dock = FrostPanel(this, u * 2.2f, hex(0x9911151BL), hex(0x38FFFFFFL), 1f)
+        // dok: pełna szerokość, bez tła/ramki/szkła - ikony pływają na scenerii; równe odstępy, padding boczny 48 dp
+        val dp = resources.displayMetrics.density
         rowScroll = HorizontalScrollView(this)
         rowScroll.isHorizontalScrollBarEnabled = false
         rowScroll.overScrollMode = View.OVER_SCROLL_NEVER
+        rowScroll.isFillViewport = true
         rowScroll.clipChildren = false
         rowScroll.clipToPadding = false
-        rowScroll.setPadding(uu(1.6f), uu(1.3f), uu(1.6f), uu(1.5f))
-        row = LinearLayout(this)
+        rowScroll.setPadding((48f * dp).toInt(), uu(1.3f), (48f * dp).toInt(), uu(1.5f))
+        row = SpreadRow(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.clipChildren = false
-        // jedna poświata za kafelkami, płynnie przesuwana do zaznaczonego
+        row.setPadding((24f * dp).toInt(), 0, (24f * dp).toInt(), 0)   // zapas na poświatę skrajnych ikon
+        // jedna poświata za ikonami, płynnie przesuwana do zaznaczonej
         dockGlow = GlowLayer(this)
         rowHost = FrameLayout(this)
         rowHost.clipChildren = false
         rowHost.addView(dockGlow, FrameLayout.LayoutParams(MATCH, MATCH))
-        rowHost.addView(row, FrameLayout.LayoutParams(WRAP, WRAP))
-        rowScroll.addView(rowHost, FrameLayout.LayoutParams(WRAP, WRAP))
-        dock.maxWFrac = 0.60f
-        dock.maxHFrac = 0.22f
-        dock.addView(rowScroll, FrameLayout.LayoutParams(WRAP, WRAP))
-        val dlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-        dlp.bottomMargin = (Backdrop.screenH * 0.05f).toInt()
-        home.addView(dock, dlp)
+        rowHost.addView(row, FrameLayout.LayoutParams(MATCH, WRAP))
+        rowScroll.addView(rowHost, FrameLayout.LayoutParams(MATCH, WRAP))
+        val dlp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM)
+        dlp.bottomMargin = (Backdrop.screenH * 0.04f).toInt()
+        home.addView(rowScroll, dlp)
 
         // scena bezczynności (nad grupą normalną, początkowo ukryta)
         idle = IdleScene(this, u)
@@ -458,12 +458,29 @@ class MainActivity : Activity() {
         return iconView(icon ?: pm.defaultActivityIcon)
     }
 
+    /** Kwadratowa ikona aplikacji (aktywność, potem aplikacja; w ostateczności baner) na matowym tle. */
+    private fun dockVisual(pkg: String, intent: Intent): View {
+        val pm = packageManager
+        val icon: Drawable? = try {
+            pm.getActivityIcon(intent)
+        } catch (e: Exception) {
+            try { pm.getApplicationIcon(pkg) } catch (e2: Exception) { null }
+        }
+        if (icon != null) {
+            val iv = ImageView(this)
+            iv.setImageDrawable(icon)
+            iv.scaleType = ImageView.ScaleType.CENTER_CROP
+            return iv
+        }
+        return visualFor(pkg, intent)
+    }
+
     private fun makeTile(
         label: String, content: View, w: Float,
         onClick: () -> Unit, onLong: (() -> Unit)?, dock: Boolean,
         glow: GlowLayer? = null, glowHost: View? = null
     ): TileView {
-        val tile = TileView(this, u, w, label, content)
+        val tile = TileView(this, u, w, label, content, true, dock)
         tile.onFocus = { v ->
             if (dock) {
                 lastDock = v
@@ -486,11 +503,10 @@ class MainActivity : Activity() {
         tilePkg.clear()
         lastDock = null
         val pm = packageManager
-        val gap = uu(1.2f)
 
         // pierwszy kafelek: TV (lista wejść)
-        val tv = makeTile("TV", TvGlyphView(this), dockTileW, { openTv() }, null, true, dockGlow, rowHost)
-        row.addView(tv, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
+        val tv = makeTile("TV", TvGlyphView(this, 0.66f), dockW(), { openTv() }, null, true, dockGlow, rowHost)
+        row.addView(tv, LinearLayout.LayoutParams(WRAP, WRAP))
 
         for (pkg in favorites().take(9)) {
             val intent = launchIntent(pkg) ?: continue
@@ -500,12 +516,12 @@ class MainActivity : Activity() {
                 continue
             }
             val hold = arrayOfNulls<View>(1)
-            val item = makeTile(label, visualFor(pkg, intent), dockTileW, { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true, dockGlow, rowHost)
+            val item = makeTile(label, dockVisual(pkg, intent), dockW(), { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true, dockGlow, rowHost)
             hold[0] = item
             tilePkg[item] = pkg
-            row.addView(item, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
+            row.addView(item, LinearLayout.LayoutParams(WRAP, WRAP))
         }
-        row.addView(makeTile("Aplikacje", GlyphView(this), dockTileW, { showAllApps() }, null, true, dockGlow, rowHost), LinearLayout.LayoutParams(WRAP, WRAP))
+        row.addView(makeTile("Aplikacje", GlyphView(this, 0.5f), dockW(), { showAllApps() }, null, true, dockGlow, rowHost), LinearLayout.LayoutParams(WRAP, WRAP))
         relinkFocus()
         if (focusFirst) row.getChildAt(0)?.requestFocus()
         if (animate) playEntrance()
@@ -651,7 +667,7 @@ class MainActivity : Activity() {
         val ni = idx + dir
         if (idx < lead || ni < lead || ni > row.childCount - 2) return
         val other = row.getChildAt(ni)
-        val step = (item.width + uu(1.2f)).toFloat()
+        val step = Math.abs(other.left - item.left).toFloat()
         val lp = item.layoutParams
         row.removeView(item)
         row.addView(item, ni, lp)

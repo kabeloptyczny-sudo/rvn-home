@@ -150,8 +150,8 @@ class GpwWidget(ctx: Context, private val u: Float) :
             sb.append(' ').append(String.format(loc, "%.2f%%", Math.abs(p)))
             rv.chg.text = sb
             rv.chg.setTextColor(color)
-            rv.spark.set(q.series, color)
-            rv.spark.visibility = if (q.series.size >= 2) View.VISIBLE else View.INVISIBLE
+            rv.spark.set(q.series, q.ts, if (up) Pal.UP else if (down) Pal.DOWN else Pal.SAND)
+            rv.spark.visibility = View.VISIBLE
         }
         visibility = if (any) View.VISIBLE else View.GONE
     }

@@ -42,7 +42,11 @@ fun fmtTurnover(v: Double): String {
     return String.format(pl, if (v < 1e7) "%.2f mln zł" else "%.1f mln zł", v / 1e6)
 }
 
-class Quote(val key: String, val price: Double, val prev: Double, val time: Long, val series: FloatArray = FloatArray(0)) {
+/** [series] i [ts] (ms, ta sama długość) to niepuste zamknięcia 5m z dnia; [ts] pusty = brak czasów (stary cache). */
+class Quote(
+    val key: String, val price: Double, val prev: Double, val time: Long,
+    val series: FloatArray = FloatArray(0), val ts: LongArray = LongArray(0)
+) {
     val changePct: Double get() = if (prev != 0.0) (price - prev) / prev * 100.0 else 0.0
 }
 
@@ -128,21 +132,30 @@ class YahooSource : QuoteSource {
         if (prev.isNaN() || prev == 0.0) prev = meta.optDouble("chartPreviousClose", Double.NaN)
         if (price.isNaN() || prev.isNaN() || prev == 0.0) return null
 
+        val tsA = res.optJSONArray("timestamp")
         val closes = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0)?.optJSONArray("close")
-        val tmp = ArrayList<Float>()
-        if (closes != null) {
-            for (i in 0 until closes.length()) {
-                if (closes.isNull(i)) continue
-                val v = closes.optDouble(i, Double.NaN)
-                if (!v.isNaN()) tmp.add(v.toFloat())
-            }
+        val n = if (closes != null && tsA != null) Math.min(closes.length(), tsA.length()) else 0
+        val tv = FloatArray(n)
+        val tt = LongArray(n)
+        var m = 0
+        for (i in 0 until n) {
+            if (closes!!.isNull(i)) continue          // null pomijamy, nie zerujemy
+            val v = closes.optDouble(i, Double.NaN)
+            if (v.isNaN()) continue
+            tv[m] = v.toFloat()
+            tt[m] = tsA!!.optLong(i) * 1000L
+            m++
         }
-        val step = Math.max(1, (tmp.size + 59) / 60)
-        val out = ArrayList<Float>()
-        var i = 0
-        while (i < tmp.size) { out.add(tmp[i]); i += step }
-        if (tmp.isNotEmpty() && out.last() != tmp.last()) out.add(tmp.last())
-        return Quote(key, price, prev, meta.optLong("regularMarketTime", 0L) * 1000L, out.toFloatArray())
+        val step = Math.max(1, (m + 59) / 60)
+        val cnt = (m + step - 1) / step
+        val extra = if (m > 0 && (m - 1) % step != 0) 1 else 0
+        val ov = FloatArray(cnt + extra)
+        val ot = LongArray(cnt + extra)
+        var k = 0
+        var j = 0
+        while (j < m) { ov[k] = tv[j]; ot[k] = tt[j]; k++; j += step }
+        if (extra == 1) { ov[k] = tv[m - 1]; ot[k] = tt[m - 1] }
+        return Quote(key, price, prev, meta.optLong("regularMarketTime", 0L) * 1000L, ov, ot)
     }
 
     override fun fetchChart(key: String, range: ChartRange): ChartData? {
@@ -322,7 +335,9 @@ class GpwController(
                 val q = o.optJSONObject(k) ?: continue
                 val sa = q.optJSONArray("s")
                 val ser = FloatArray(sa?.length() ?: 0) { j -> sa!!.optDouble(j).toFloat() }
-                data[k] = Quote(k, q.getDouble("p"), q.getDouble("c"), q.getLong("t"), ser)
+                val xa = q.optJSONArray("x")
+                val tsl = if (xa != null && xa.length() == ser.size) LongArray(ser.size) { j -> xa.optLong(j) * 1000L } else LongArray(0)
+                data[k] = Quote(k, q.getDouble("p"), q.getDouble("c"), q.getLong("t"), ser, tsl)
             }
             lastOk = prefs.getLong("ok", 0L)
             stale = true
@@ -335,7 +350,9 @@ class GpwController(
         for ((k, q) in data) {
             val sa = org.json.JSONArray()
             for (v in q.series) sa.put(Math.round(v * 100f) / 100.0)
-            o.put(k, JSONObject().put("p", q.price).put("c", q.prev).put("t", q.time).put("s", sa))
+            val xa = org.json.JSONArray()
+            if (q.ts.size == q.series.size) for (t in q.ts) xa.put(t / 1000L)
+            o.put(k, JSONObject().put("p", q.price).put("c", q.prev).put("t", q.time).put("s", sa).put("x", xa))
         }
         prefs.edit().putString("q", o.toString()).putLong("ok", lastOk).apply()
     }
