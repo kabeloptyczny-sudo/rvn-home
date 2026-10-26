@@ -46,7 +46,7 @@ class MainActivity : Activity() {
     private lateinit var root: FrameLayout
     private lateinit var rowScroll: HorizontalScrollView
     private lateinit var row: LinearLayout
-    private lateinit var home: FrameLayout
+    private lateinit var home: LinearLayout // ZMIENIONO Z FrameLayout NA LinearLayout
     private lateinit var rowHost: FrameLayout
     private lateinit var dockGlow: GlowLayer
     private lateinit var np: NowPlayingPanel
@@ -152,19 +152,26 @@ class MainActivity : Activity() {
             root.addView(scrim, MATCH, MATCH)
         }
 
-        // grupa "normalna" (zegar, widżety, dok): w scenie bezczynności znika, tło zostaje
-        home = FrameLayout(this)
+        // GŁÓWNY KONTENER: Pionowy LinearLayout, który gwarantuje, że dok będzie na dole
+        home = LinearLayout(this)
+        home.orientation = LinearLayout.VERTICAL
         home.clipChildren = false
         root.addView(home, MATCH, MATCH)
+
+        // --- GÓRNA CZĘŚĆ EKRANU (Zegar i Widżety) ---
+        val topPart = FrameLayout(this)
+        topPart.clipChildren = false
+        // Waga 1 sprawia, że ta część zajmuje całą wolną przestrzeń do samego dołu
+        home.addView(topPart, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
         // zegar + data + pogoda + życzenie (lewy górny róg)
         clock = ClockView(this, u, 1f, true)
         val hlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
         hlp.leftMargin = uu(4f)
         hlp.topMargin = (Backdrop.screenH * 0.05f).toInt()
-        home.addView(clock, hlp)
+        topPart.addView(clock, hlp)
 
-        // prawy górny róg: widżet GPW, pod nim panel "teraz odtwarzane" (oba dopasowane do zawartości)
+        // prawy górny róg: widżet GPW, pod nim panel "teraz odtwarzane"
         val pane = LinearLayout(this)
         pane.orientation = LinearLayout.VERTICAL
         pane.clipChildren = false
@@ -175,6 +182,7 @@ class MainActivity : Activity() {
         val wlp = LinearLayout.LayoutParams(WRAP, WRAP)
         wlp.gravity = Gravity.END
         pane.addView(gw, wlp)
+
         np = NowPlayingPanel(this, u)
         np.id = View.generateViewId()
         np.onOpen = { pkg -> launchIntent(pkg)?.let { launch(it) } }
@@ -183,12 +191,13 @@ class MainActivity : Activity() {
         nlp.gravity = Gravity.END
         nlp.topMargin = uu(1.8f)
         pane.addView(np, nlp)
-        val plp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
-        plp.rightMargin = uu(4f)                                  // prawy brzeg w 96% szerokości
-        plp.topMargin = (Backdrop.screenH * 0.05f).toInt()       // górny brzeg w 5% wysokości
-        home.addView(pane, plp)
 
-        // dok: pełna szerokość na samym dole, bez tła/ramki/szkła - ikony pływają na scenerii; równe odstępy, padding boczny 48 dp
+        val plp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
+        plp.rightMargin = uu(4f)
+        plp.topMargin = (Backdrop.screenH * 0.05f).toInt()
+        topPart.addView(pane, plp)
+
+        // --- DOLNA CZĘŚĆ EKRANU (Dok) ---
         val dp = resources.displayMetrics.density
         rowScroll = HorizontalScrollView(this)
         rowScroll.isHorizontalScrollBarEnabled = false
@@ -197,18 +206,21 @@ class MainActivity : Activity() {
         rowScroll.clipChildren = false
         rowScroll.clipToPadding = false
         rowScroll.setPadding((48f * dp).toInt(), uu(1.3f), (48f * dp).toInt(), uu(1.5f))
+
         row = SpreadRow(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.clipChildren = false
-        row.setPadding((24f * dp).toInt(), 0, (24f * dp).toInt(), 0)   // zapas na poświatę skrajnych ikon
-        // jedna poświata za ikonami, płynnie przesuwana do zaznaczonej
+        row.setPadding((24f * dp).toInt(), 0, (24f * dp).toInt(), 0)
+
         dockGlow = GlowLayer(this)
         rowHost = FrameLayout(this)
         rowHost.clipChildren = false
         rowHost.addView(dockGlow, FrameLayout.LayoutParams(MATCH, MATCH))
         rowHost.addView(row, FrameLayout.LayoutParams(MATCH, WRAP))
         rowScroll.addView(rowHost, FrameLayout.LayoutParams(MATCH, WRAP))
-        val dlp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM)
+
+        // Dodajemy dok na samym końcu pionowego układu (z marginesem od dołu)
+        val dlp = LinearLayout.LayoutParams(MATCH, WRAP)
         dlp.bottomMargin = (Backdrop.screenH * 0.04f).toInt()
         home.addView(rowScroll, dlp)
 
@@ -244,7 +256,7 @@ class MainActivity : Activity() {
             }
 
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                if (idleCanceled) return          // przerwanie (np. wybudzenie w trakcie wejścia): stan prowadzi nowa animacja
+                if (idleCanceled) return
                 idleP = idleTo
                 applyIdle()
                 setIdleLayers(false)
@@ -294,7 +306,6 @@ class MainActivity : Activity() {
         resumed = false
         ui.removeCallbacks(rotateTask)
         ui.removeCallbacks(idleCheck)
-        // pauza animacji: scena bezczynności wraca do stanu normalnego, Ticker i tło stoją
         idleAnim.cancel()
         idleTarget = 0f
         idleP = 0f
@@ -333,7 +344,6 @@ class MainActivity : Activity() {
             if (gpwDetail?.handleBack() == true) return
             hideOverlay(true)
         }
-        // na ekranie głównym przycisk Wstecz nic nie robi
     }
 
     // ---------------------------------------------------------------- tapety własne (zdjęcia)
@@ -368,7 +378,6 @@ class MainActivity : Activity() {
         return BitmapFactory.decodeFile(f.path, opts)
     }
 
-    /** Crossfade zdjęć 3 s. */
     private fun showWallpaper(wall: Wall) {
         fadeAnim?.cancel()
         Backdrop.prev = Backdrop.cur
@@ -408,7 +417,6 @@ class MainActivity : Activity() {
         packageManager.getLeanbackLaunchIntentForPackage(pkg)
             ?: packageManager.getLaunchIntentForPackage(pkg)
 
-    /** Start z płynnym przejściem (fade + lekki scale). Zwraca false, gdy się nie udało. */
     private fun tryStart(intent: Intent): Boolean = try {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val opts = ActivityOptions.makeCustomAnimation(this, R.anim.app_enter, R.anim.home_exit)
@@ -441,7 +449,6 @@ class MainActivity : Activity() {
         return iv
     }
 
-    /** Baner aplikacji (loadBanner), a gdy go brak - ikona na matowym kafelku tego samego rozmiaru. */
     private fun visualFor(pkg: String, intent: Intent): View {
         val pm = packageManager
         val banner: Drawable? = try {
@@ -458,7 +465,6 @@ class MainActivity : Activity() {
         return iconView(icon ?: pm.defaultActivityIcon)
     }
 
-    /** Kwadratowa ikona aplikacji (aktywność, potem aplikacja; w ostateczności baner) na matowym tle. */
     private fun dockVisual(pkg: String, intent: Intent): View {
         val pm = packageManager
         val icon: Drawable? = try {
@@ -504,7 +510,6 @@ class MainActivity : Activity() {
         lastDock = null
         val pm = packageManager
 
-        // pierwszy kafelek: TV (lista wejść)
         val tv = makeTile("TV", TvGlyphView(this, 0.66f), dockW(), { openTv() }, null, true, dockGlow, rowHost)
         row.addView(tv, LinearLayout.LayoutParams(WRAP, WRAP))
 
@@ -527,7 +532,6 @@ class MainActivity : Activity() {
         if (animate) playEntrance()
     }
 
-    /** Kafelki pojawiają się płynnie jeden po drugim (fade + 1u w górę, 250 ms ease-out). */
     private fun playEntrance() {
         for (i in 0 until row.childCount) {
             val item = row.getChildAt(i)
@@ -543,12 +547,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------------------------------------------------------------- nawigacja fokusem (dok, widżet, teraz odtwarzane)
-
-    /**
-     * Fokus: dok w górę -> "teraz odtwarzane" (gdy widoczne) albo widżet; panel w górę -> widżet, w dół -> dok;
-     * widżet w dół -> panel (gdy widoczny) albo dok. Wołane po zmianie widoczności panelu/widżetu i fokusu w doku.
-     */
     private fun relinkFocus() {
         val npOn = np.visibility == View.VISIBLE
         val gwOn = gw.visibility == View.VISIBLE
@@ -561,14 +559,11 @@ class MainActivity : Activity() {
     }
 
     private fun npVisibilityChanged() {
-        // panel znika razem z fokusem: oddaj go widżetowi albo dokowi
         if (!np.active && np.hasFocus() && overlay == null) {
             (if (gw.visibility == View.VISIBLE) gw else lastDock ?: row.getChildAt(0))?.requestFocus()
         }
         relinkFocus()
     }
-
-    // ---------------------------------------------------------------- scena bezczynności
 
     private val idleCheck = object : Runnable {
         override fun run() {
@@ -579,14 +574,13 @@ class MainActivity : Activity() {
                 return
             }
             if (overlay != null || reorderItem != null) {
-                ui.postDelayed(this, 30_000L)      // otwarta nakładka: nie wchodzimy w bezczynność
+                ui.postDelayed(this, 30_000L)
                 return
             }
             enterIdle()
         }
     }
 
-    /** Hardware layer tylko na czas crossfade'u: grupa jest renderowana raz, a alfa to tani blending. */
     private fun setIdleLayers(on: Boolean) {
         val t = if (on) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
         home.setLayerType(t, null)
@@ -622,12 +616,10 @@ class MainActivity : Activity() {
         ui.postDelayed(idleCheck, idleMs)
     }
 
-    // ---------------------------------------------------------------- widok szczegółowy GPW
-
     private fun openGpw() {
         if (overlay != null) return
         val holder = FrameLayout(this)
-        holder.clipChildren = false     // miękki cień panelu wychodzi poza jego obrys
+        holder.clipChildren = false
         val detail = GpwDetailView(this, u, worker, ui, YahooSource())
         val lp = FrameLayout.LayoutParams(MATCH, MATCH)
         val mh = uu(6f)
@@ -638,8 +630,6 @@ class MainActivity : Activity() {
         showOverlay(holder, detail, hex(0xC00C1016L))
         detail.start()
     }
-
-    // ---------------------------------------------------------------- wejścia TV
 
     private fun openTv() {
         val items = TvInputs.list(this)
@@ -653,8 +643,6 @@ class MainActivity : Activity() {
         }
         showOverlay(view, first, hex(0xB30C1016L))
     }
-
-    // ---------------------------------------------------------------- zmiana kolejności ulubionych
 
     private fun startReorder(item: View) {
         reorderItem = item
@@ -685,7 +673,6 @@ class MainActivity : Activity() {
 
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         lastKeyAt = SystemClock.uptimeMillis()
-        // pierwszy klawisz w scenie bezczynności tylko budzi i nie jest wykonywany (łącznie z powtórzeniami i zwolnieniem)
         if (e.keyCode == swallowKey) {
             if (e.action == KeyEvent.ACTION_UP) swallowKey = -1
             return true
@@ -717,8 +704,6 @@ class MainActivity : Activity() {
         }
         return super.dispatchKeyEvent(e)
     }
-
-    // ---------------------------------------------------------------- nakładki (aplikacje, wejścia)
 
     private fun showOverlay(sheet: View, focus: View?, scrimTint: Int) {
         if (overlay != null) return
