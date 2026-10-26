@@ -664,6 +664,10 @@ class GpwDetailView(
     private val keys = GPW_INDICES.map { it.first }
     private val tabs = ArrayList<TextView>()
     private val rangeTabs = ArrayList<TextView>()
+    private val tabGlow = GlowLayer(ctx)
+    private val rangeGlow = GlowLayer(ctx)
+    private var tabsShown = false
+    private lateinit var headHost: FrameLayout
     private val status = TextView(ctx)
     private val value = RollingValueView(ctx, u * 8.0f)
     private val change = TextView(ctx)
@@ -716,7 +720,14 @@ class GpwDetailView(
             head.addView(t, lp)
             rangeTabs.add(t)
         }
-        col.addView(head, LinearLayout.LayoutParams(-1, -2))
+        headHost = FrameLayout(ctx)
+        headHost.clipChildren = false
+        val tg = FrameLayout.LayoutParams(-1, -1)
+        tg.setMargins(-(u * 1.5f).toInt(), -(u * 1.4f).toInt(), -(u * 1.5f).toInt(), -(u * 1.4f).toInt())
+        headHost.addView(tabGlow, tg)
+        headHost.addView(rangeGlow, FrameLayout.LayoutParams(tg))
+        headHost.addView(head, FrameLayout.LayoutParams(-1, -2))
+        col.addView(headHost, LinearLayout.LayoutParams(-1, -2))
 
         // wartość + zmiana + status
         val vrow = LinearLayout(ctx)
@@ -840,13 +851,31 @@ class GpwDetailView(
         switchTo()
     }
 
+    /** Zaznaczona zakładka: skala 1.12, przygaszenie 70% -> 100% (220 ms, ease-out), poświata przesuwa się pod nią. */
+    private fun pick(t: TextView, on: Boolean, anim: Boolean) {
+        val z = if (on) Sel.SCALE else 1f
+        val a = if (on) 1f else Sel.DIM
+        t.animate().cancel()
+        if (!anim) {
+            t.scaleX = z; t.scaleY = z; t.alpha = a
+            return
+        }
+        t.animate().scaleX(z).scaleY(z).alpha(a).setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
+    }
+
     private fun updateTabs() {
+        val anim = tabsShown
         for (i in tabs.indices) {
-            tabs[i].setTextColor(if (i == idx) Pal.TEXT else Pal.TEXT_DIM)
+            pick(tabs[i], i == idx, anim)
+            tabs[i].setTextColor(Pal.TEXT)
             tabs[i].typeface = Typeface.create(if (i == idx) "sans-serif" else "sans-serif-light", Typeface.NORMAL)
         }
-        rangeTabs[0].setTextColor(if (range == ChartRange.D1) Pal.TEXT else Pal.TEXT_DIM)
-        rangeTabs[1].setTextColor(if (range == ChartRange.D5) Pal.TEXT else Pal.TEXT_DIM)
+        pick(rangeTabs[0], range == ChartRange.D1, anim)
+        pick(rangeTabs[1], range == ChartRange.D5, anim)
+        for (t in rangeTabs) t.setTextColor(Pal.TEXT)
+        tabGlow.focusOn(headHost, tabs[idx])
+        rangeGlow.focusOn(headHost, rangeTabs[if (range == ChartRange.D1) 0 else 1])
+        tabsShown = true
     }
 
     // ------------------------------------------------------------ dane

@@ -75,7 +75,9 @@ class SelFx(private val host: View, private val u: Float) {
         anim.addUpdateListener {
             sel = from + (to - from) * it.animatedFraction
             onStep?.step(sel)
-            host.invalidate()
+            val mx = (host.width * 0.8f).toInt()
+            val my = (host.height * 0.8f).toInt()
+            host.invalidate(-mx, -my, host.width + mx, host.height + my)
         }
     }
 

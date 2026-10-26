@@ -22,10 +22,11 @@ object Pal {
     val FLAT = hex(0xB3EFE8DAL)
 }
 
-/** Ruch: 220 ms, ease-out, bez overshootu. */
+/** Ruch: 220 ms, ease-out, bez overshootu (jedyna deklaracja Motion w projekcie). */
 object Motion {
     const val MS = 220L
     const val LABEL_MS = 150L
+    const val FADE_MS = 250L
     val EASE: Interpolator = DecelerateInterpolator(1.6f)
 }
 

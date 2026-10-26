@@ -1,7 +1,6 @@
 package pl.frutiger.tvhome
 
 import android.content.Context
-import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.util.TypedValue
@@ -15,6 +14,8 @@ import android.widget.TextView
 class ListRow(ctx: Context, private val u: Float, text: String) : FrameLayout(ctx) {
     private val fx = SelFx(this, u)
     private val label = TextView(ctx)
+    var onFocus: ((ListRow) -> Unit)? = null
+    var onBlur: ((ListRow) -> Unit)? = null
 
     init {
         isFocusable = true
@@ -46,11 +47,7 @@ class ListRow(ctx: Context, private val u: Float, text: String) : FrameLayout(ct
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         fx.set(gainFocus)
-    }
-
-    override fun dispatchDraw(canvas: Canvas) {
-        fx.drawGlow(canvas, width.toFloat(), height.toFloat())
-        super.dispatchDraw(canvas)
+        if (gainFocus) onFocus?.invoke(this) else onBlur?.invoke(this)
     }
 
     override fun onDetachedFromWindow() {
@@ -67,6 +64,17 @@ fun buildInputPicker(ctx: Context, u: Float, items: List<TvInputs.Item>, onPick:
     col.orientation = LinearLayout.VERTICAL
     col.setPadding((u * 2.6f).toInt(), (u * 2.4f).toInt(), (u * 2.6f).toInt(), (u * 2.6f).toInt())
     col.clipChildren = false
+    // jedna poświata przesuwająca się między wierszami (nie znika przy zmianie wiersza)
+    val glow = GlowLayer(ctx)
+    glow.spreadX = 0.62f
+    glow.spreadY = 1.5f
+    glow.biasY = 0f
+    val colHost = FrameLayout(ctx)
+    colHost.clipChildren = false
+    val gl = FrameLayout.LayoutParams(-1, -1)
+    gl.setMargins(-(u * 2f).toInt(), -(u * 1.5f).toInt(), -(u * 2f).toInt(), -(u * 1.5f).toInt())
+    colHost.addView(glow, gl)
+    colHost.addView(col, FrameLayout.LayoutParams(-2, -2))
     val title = TextView(ctx)
     title.text = "wejścia"
     title.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 2.2f)
@@ -78,12 +86,14 @@ fun buildInputPicker(ctx: Context, u: Float, items: List<TvInputs.Item>, onPick:
     for (it in items) {
         val r = ListRow(ctx, u, it.label)
         r.setOnClickListener { _ -> onPick(it) }
+        r.onFocus = { v -> glow.focusOn(colHost, v) }
+        r.onBlur = { glow.release() }
         val lp = LinearLayout.LayoutParams((u * 30f).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT)
         lp.topMargin = (u * 1.1f).toInt()
         col.addView(r, lp)
         if (first == null) first = r
     }
-    panel.addView(col, FrameLayout.LayoutParams(-2, -2))
+    panel.addView(colHost, FrameLayout.LayoutParams(-2, -2))
     holder.addView(panel, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
     return Pair(holder, first)
 }
