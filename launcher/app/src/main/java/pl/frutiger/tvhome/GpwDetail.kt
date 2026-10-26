@@ -69,7 +69,8 @@ class GpwDetailView(
         tabs.orientation = LinearLayout.HORIZONTAL
         tabs.setPadding((u * 1.5f).toInt(), (u * 1f).toInt(), (u * 1.5f).toInt(), (u * 1f).toInt())
         
-        for ((i, (k, n)) in GPW_CARDS.withIndex()) {
+        for (i in GPW_CARDS.indices) {
+            val (k, n) = GPW_CARDS[i]
             val t = TextView(ctx)
             t.text = n
             t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, u * 1.2f)
@@ -154,7 +155,7 @@ class GpwDetailView(
                     if (cd != null) {
                         updateInfo(cd)
                         chartView.setData(cd)
-                        tabs.getChildAt(currentIdx)?.setTextColor(Pal.TEXT)
+                        (tabs.getChildAt(currentIdx) as? TextView)?.setTextColor(Pal.TEXT)
                     } else {
                         Log.e("GpwDetail", "Brak danych dla $currentKey")
                         chartView.setData(null)
@@ -212,9 +213,15 @@ class GpwDetailView(
         private val cursorPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val cursorRect = RectF()
+        private val nf = java.text.NumberFormat.getNumberInstance(java.util.Locale("pl", "PL"))
         
         private var data: ChartData? = null
         private var cursorIdx = -1
+        
+        init {
+            nf.minimumFractionDigits = 2
+            nf.maximumFractionDigits = 2
+        }
         
         init {
             linePaint.style = Paint.Style.STROKE
