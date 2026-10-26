@@ -12,10 +12,12 @@ import java.util.Date
 import java.util.Locale
 
 /** Zegar: cienka czcionka, bez gradientów i cieni; data po polsku małymi literami. Rozmiary od u (1% szerokości). */
-class ClockView(ctx: Context, u: Float, k: Float = 1f) : LinearLayout(ctx) {
+class ClockView(ctx: Context, u: Float, k: Float = 1f, private val greeting: Boolean = false) : LinearLayout(ctx) {
 
     private val time = TextView(ctx)
     private val date = TextView(ctx)
+    private val weather = TextView(ctx)
+    private val wish = TextView(ctx)
     private val ui = Handler(Looper.getMainLooper())
     private val pl = Locale("pl", "PL")
     private val fDate = SimpleDateFormat("EEEE, d MMMM", pl)
@@ -48,6 +50,23 @@ class ClockView(ctx: Context, u: Float, k: Float = 1f) : LinearLayout(ctx) {
         lp.topMargin = (u * 0.5f * k).toInt()
         lp.leftMargin = (u * 0.4f * k).toInt()
         addView(date, lp)
+
+        if (greeting) {
+            // pod datą: pogoda (ukryta bez danych) i życzenie wg pory dnia, ta sama cienka czcionka
+            for (t in arrayOf(weather, wish)) {
+                t.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 1.5f * k)
+                t.setTextColor(Pal.TEXT_DIM)
+                t.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+                t.letterSpacing = 0.03f
+                t.maxLines = 1
+                t.ellipsize = android.text.TextUtils.TruncateAt.END
+                val l = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
+                l.topMargin = (u * 0.35f * k).toInt()
+                l.leftMargin = (u * 0.4f * k).toInt()
+                addView(t, l)
+            }
+            weather.visibility = GONE
+        }
         refresh()
     }
 
@@ -55,6 +74,14 @@ class ClockView(ctx: Context, u: Float, k: Float = 1f) : LinearLayout(ctx) {
         val now = Date()
         time.text = fTime.format(now)
         date.text = fDate.format(now).lowercase(pl)
+        if (greeting) wish.text = HomeInfo.wish()
+    }
+
+    /** Linia pogody pod datą; null = ukryj. */
+    fun setWeather(text: String?) {
+        if (!greeting) return
+        weather.text = text ?: ""
+        weather.visibility = if (text == null) GONE else VISIBLE
     }
 
     fun start() {

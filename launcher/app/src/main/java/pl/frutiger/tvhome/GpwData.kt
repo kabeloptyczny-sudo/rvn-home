@@ -15,6 +15,33 @@ import java.util.concurrent.ExecutorService
 /** Indeksy: klucz -> nazwa wyświetlana. */
 val GPW_INDICES = listOf("WIG20" to "WIG20", "MWIG40" to "mWIG40", "SWIG80" to "sWIG80")
 
+/** Spółki (Yahoo: TEN.WA = Ten Square Games, GPP.WA = Grupa Pracuj). */
+val GPW_TICKERS = listOf("TEN", "GPP")
+
+/** Karty widoku szczegółowego i pasek sceny bezczynności: indeksy, potem spółki (klucz -> nazwa). */
+val GPW_CARDS: List<Pair<String, String>> = GPW_INDICES + GPW_TICKERS.map { it to it }
+
+/** Odbiorca notowań (widżet, pasek sceny bezczynności). */
+interface QuoteSink {
+    fun bind(data: Map<String, Quote>, newest: Long, stale: Boolean, loc: java.util.Locale, tz: java.util.TimeZone)
+}
+
+/** 1,2 mln / 345 tys. */
+fun fmtVolume(v: Double): String {
+    val pl = Locale("pl", "PL")
+    return when {
+        v >= 1e6 -> String.format(pl, "%.1f mln", v / 1e6)
+        v >= 1e3 -> String.format(pl, "%.0f tys.", v / 1e3)
+        else -> String.format(pl, "%.0f", v)
+    }
+}
+
+/** Obrót w mln zł. */
+fun fmtTurnover(v: Double): String {
+    val pl = Locale("pl", "PL")
+    return String.format(pl, if (v < 1e7) "%.2f mln zł" else "%.1f mln zł", v / 1e6)
+}
+
 class Quote(val key: String, val price: Double, val prev: Double, val time: Long, val series: FloatArray = FloatArray(0)) {
     val changePct: Double get() = if (prev != 0.0) (price - prev) / prev * 100.0 else 0.0
 }
@@ -27,8 +54,13 @@ class ChartData(
     val t: LongArray, val v: FloatArray,
     val price: Double, val prev: Double,
     val open: Double, val high: Double, val low: Double,
-    val axisStart: Long, val axisEnd: Long, val marketTime: Long
-)
+    val axisStart: Long, val axisEnd: Long, val marketTime: Long,
+    /** Wolumen w przedziale (ta sama długość co [t]; null z Yahoo = 0), wolumen i obrót z ostatniego dnia. */
+    val vol: FloatArray, val volToday: Double, val turnover: Double
+) {
+    /** Sekcja wolumenu tylko, gdy są dane (pusty lub same zera = ukryta). */
+    val hasVol: Boolean = vol.size == t.size && vol.any { it > 0f }
+}
 
 /** Sesja GPW wg zadanych reguł: pon-pt 9:00-17:35 Europe/Warsaw. */
 object GpwClock {
@@ -57,6 +89,7 @@ object Net {
     const val UA = "Mozilla/5.0 (Linux; Android 10; TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
     fun get(url: String): String {
+        require(url.startsWith("https://")) { "tylko HTTPS" }
         val c = URL(url).openConnection() as HttpURLConnection
         try {
             c.connectTimeout = 8000
@@ -138,9 +171,14 @@ class YahooSource : QuoteSource {
         val op = q.optJSONArray("open")
         val hi = q.optJSONArray("high")
         val lo = q.optJSONArray("low")
+        val vo = q.optJSONArray("volume")
         val bucket = if (range == ChartRange.D1) 300L else 900L
         val tt = ArrayList<Long>()
         val vv = ArrayList<Float>()
+        val bv = ArrayList<Float>()
+        var curDay = Long.MIN_VALUE
+        var dayVol = 0.0
+        var dayTurn = 0.0
         var openV = Double.NaN
         var hiV = Double.NEGATIVE_INFINITY
         var loV = Double.POSITIVE_INFINITY
@@ -153,13 +191,21 @@ class YahooSource : QuoteSource {
             if (openV.isNaN() && op != null && !op.isNull(i)) openV = op.optDouble(i, Double.NaN)
             if (hi != null && !hi.isNull(i)) hiV = Math.max(hiV, hi.optDouble(i, Double.NEGATIVE_INFINITY))
             if (lo != null && !lo.isNull(i)) loV = Math.min(loV, lo.optDouble(i, Double.POSITIVE_INFINITY))
+            var rv = if (vo != null && !vo.isNull(i)) vo.optDouble(i, 0.0) else 0.0
+            if (rv.isNaN() || rv < 0.0) rv = 0.0
+            val dayKey = (sec * 1000L + GpwClock.zone.getOffset(sec * 1000L)) / 86_400_000L
+            if (dayKey != curDay) { curDay = dayKey; dayVol = 0.0; dayTurn = 0.0 }
+            dayVol += rv
+            dayTurn += rv * c
             val b = sec / bucket
             if (b == lastB && tt.isNotEmpty()) {
                 tt[tt.size - 1] = sec * 1000L
                 vv[vv.size - 1] = c.toFloat()
+                bv[bv.size - 1] = bv[bv.size - 1] + rv.toFloat()
             } else {
                 tt.add(sec * 1000L)
                 vv.add(c.toFloat())
+                bv.add(rv.toFloat())
                 lastB = b
             }
         }
@@ -185,24 +231,26 @@ class YahooSource : QuoteSource {
             cal.set(Calendar.HOUR_OF_DAY, 17); cal.set(Calendar.MINUTE, 35)
             a1 = cal.timeInMillis
         }
-        return ChartData(key, range, tt.toLongArray(), vv.toFloatArray(), price, prev, openV, hiV, loV, a0, a1, mt)
+        return ChartData(key, range, tt.toLongArray(), vv.toFloatArray(), price, prev, openV, hiV, loV, a0, a1, mt,
+            bv.toFloatArray(), dayVol, dayTurn)
     }
 }
 
 /**
- * Odświeżanie notowań (tylko WIG20, mWIG40, sWIG80): co 2 min w sesji (pon-pt 9:00-17:35 Europe/Warsaw), poza nią co 30 min.
+ * Odświeżanie notowań (indeksy + TEN, GPP) co 5 min dla widżetu i dolnego paska sceny bezczynności.
  * Jeden wspólny executor aplikacji. Błąd/429 -> ostatnie dane z SharedPreferences z etykietą "nieaktualne".
  */
 class GpwController(
     ctx: Context,
     private val worker: ExecutorService,
     private val ui: Handler,
-    private val widget: GpwWidget,
+    private val sinks: List<QuoteSink>,
     private val source: QuoteSource = YahooSource()
 ) {
     private val prefs: SharedPreferences = ctx.getSharedPreferences("gpw", Context.MODE_PRIVATE)
     private val tz = TimeZone.getTimeZone("Europe/Warsaw")
-    private val keys: List<String> = GPW_INDICES.map { it.first }
+    private val keys: List<String> = GPW_CARDS.map { it.first }
+    private val period = 300_000L
     private val data = HashMap<String, Quote>()
     private var running = false
     private var busy = false
@@ -213,7 +261,7 @@ class GpwController(
         override fun run() {
             if (!running) return
             refresh()
-            ui.postDelayed(this, if (inSession()) 120_000L else 1_800_000L)
+            ui.postDelayed(this, period)
         }
     }
 
@@ -226,15 +274,13 @@ class GpwController(
         running = true
         ui.removeCallbacks(loop)
         val age = System.currentTimeMillis() - lastOk
-        ui.postDelayed(loop, if (age > (if (inSession()) 120_000L else 1_800_000L)) 300L else 5_000L)
+        ui.postDelayed(loop, Math.max(300L, period - age))
     }
 
     fun stop() {
         running = false
         ui.removeCallbacks(loop)
     }
-
-    private fun inSession(): Boolean = GpwClock.inSession()
 
     private fun refresh() {
         if (busy) return
@@ -295,13 +341,9 @@ class GpwController(
     }
 
     private fun render() {
-        if (data.isEmpty()) {
-            widget.visibility = android.view.View.GONE
-            return
-        }
         var newest = 0L
         for (q in data.values) if (q.time > newest) newest = q.time
-        widget.bind(data, newest, stale, Locale("pl", "PL"), tz)
-        widget.visibility = android.view.View.VISIBLE
+        val loc = Locale("pl", "PL")
+        for (i in sinks.indices) sinks[i].bind(data, newest, stale, loc, tz)
     }
 }

@@ -1,9 +1,9 @@
 package pl.frutiger.tvhome
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -11,40 +11,51 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 
-/** Wiersz listy w stylistyce kafelków: matowe tło, po zaznaczeniu jasna obwódka i delikatna skala. */
+/** Wiersz listy w języku zaznaczenia kafelków: bez tła i ramki, przygaszony 70% -> 100%, skala, miękka poświata pod spodem. */
 class ListRow(ctx: Context, private val u: Float, text: String) : FrameLayout(ctx) {
-    private val ring = View(ctx)
+    private val fx = SelFx(this, u)
+    private val label = TextView(ctx)
 
     init {
         isFocusable = true
         isClickable = true
         defaultFocusHighlightEnabled = false
-        val bg = GradientDrawable()
-        bg.setColor(Pal.TILE)
-        bg.cornerRadius = u * 0.9f
-        background = bg
-        val rg = GradientDrawable()
-        rg.setColor(0)
-        rg.cornerRadius = u * 0.9f
-        rg.setStroke(Math.max(2, (u * 0.22f).toInt()), Pal.RING)
-        ring.background = rg
-        ring.alpha = 0f
-        val t = TextView(ctx)
-        t.text = text
-        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 1.7f)
-        t.setTextColor(Pal.TEXT)
-        t.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-        t.gravity = Gravity.CENTER_VERTICAL
-        t.setPadding((u * 2.2f).toInt(), (u * 1.3f).toInt(), (u * 2.2f).toInt(), (u * 1.3f).toInt())
-        addView(t, LayoutParams(-1, -2))
-        addView(ring, LayoutParams(-1, -1))
+        clipChildren = false
+        label.text = text
+        label.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 1.7f)
+        label.setTextColor(Pal.TEXT)
+        label.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        label.gravity = Gravity.CENTER_VERTICAL
+        label.alpha = Sel.DIM
+        label.setPadding((u * 2.2f).toInt(), (u * 1.3f).toInt(), (u * 2.2f).toInt(), (u * 1.3f).toInt())
+        addView(label, LayoutParams(-1, -2))
+        fx.onStep = SelStep { s ->
+            val z = 1f + 0.06f * s
+            scaleX = z
+            scaleY = z
+            label.alpha = Sel.DIM + (1f - Sel.DIM) * s
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        super.onSizeChanged(w, h, ow, oh)
+        pivotX = u * 1.2f
+        pivotY = h / 2f
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        val z = if (gainFocus) 1.03f else 1f
-        animate().scaleX(z).scaleY(z).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
-        ring.animate().alpha(if (gainFocus) 1f else 0f).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
+        fx.set(gainFocus)
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        fx.drawGlow(canvas, width.toFloat(), height.toFloat())
+        super.dispatchDraw(canvas)
+    }
+
+    override fun onDetachedFromWindow() {
+        fx.cancel()
+        super.onDetachedFromWindow()
     }
 }
 

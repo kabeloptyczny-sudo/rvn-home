@@ -42,10 +42,16 @@ private fun mixC(a: Int, b: Int, f: Float): Int {
 }
 
 /**
- * Duża wartość: cienka czcionka, cyfry tabelaryczne. Zmieniające się cyfry przechodzą płynnie (roll/fade),
- * a cała wartość robi ok. 600 ms rozbłyśnięcie na zielono (wzrost) lub czerwono (spadek).
+ * Wartość: cienka czcionka, cyfry tabelaryczne. Zmieniające się cyfry przechodzą płynnie (roll/fade).
+ * Przy [highlight] cała wartość dodatkowo świeci na zielono (wzrost) lub czerwono (spadek) i wygasa w ok. 3 s.
+ * Bez alokacji w onDraw i w pętli animacji (animacja ~20 fps przy samym podświetleniu, przez [Ticker]).
  */
-class RollingValueView(context: Context, private val sizePx: Float) : View(context), Tick {
+class RollingValueView(
+    context: Context,
+    private val sizePx: Float,
+    face: String = "sans-serif-thin",
+    private val alignEnd: Boolean = false
+) : View(context), Tick {
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private var cur = CharArray(0)
@@ -54,13 +60,17 @@ class RollingValueView(context: Context, private val sizePx: Float) : View(conte
     private var roll = 1f
     private var flashP = 1f
     private var flashColor = Pal.TEXT
+    private var acc = 0f
     private val wid = FloatArray(48)
-    private val dy = sizePx * 0.30f
+    private val dy = sizePx * 0.22f
+
+    /** false = tylko animacja cyfr, bez zielonego/czerwonego podświetlenia (scena bezczynności). */
+    var highlight = true
 
     init {
         p.textSize = sizePx
         p.color = Pal.TEXT
-        p.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
+        p.typeface = Typeface.create(face, Typeface.NORMAL)
         p.fontFeatureSettings = "tnum"
     }
 
@@ -80,7 +90,7 @@ class RollingValueView(context: Context, private val sizePx: Float) : View(conte
             if (ch) any = true
         }
         roll = if (had && any) 0f else 1f
-        if (had && flash != 0) {
+        if (had && any && flash != 0 && highlight) {
             flashColor = if (flash > 0) Pal.UP else Pal.DOWN
             flashP = 0f
         }
@@ -102,8 +112,12 @@ class RollingValueView(context: Context, private val sizePx: Float) : View(conte
 
     override fun onTick(dt: Float): Boolean {
         if (roll < 1f) roll = min(1f, roll + dt / 0.28f)
-        if (flashP < 1f) flashP = min(1f, flashP + dt / 0.6f)
-        invalidate()
+        if (flashP < 1f) flashP = min(1f, flashP + dt / 3.0f)
+        acc += dt
+        if (roll < 1f || acc >= 0.05f) {
+            acc = 0f
+            invalidate()
+        }
         return roll < 1f || flashP < 1f
     }
 
@@ -112,10 +126,14 @@ class RollingValueView(context: Context, private val sizePx: Float) : View(conte
         if (n == 0) return
         p.getTextWidths(cur, 0, n, wid)
         val base = dy - p.ascent()
-        val fe = 1f - (1f - flashP) * (1f - flashP)
-        val col = mixC(flashColor, Pal.TEXT, fe)
+        val col = mixC(flashColor, Pal.TEXT, flashP * flashP)
         val e = 1f - (1f - roll) * (1f - roll)
         var x = 0f
+        if (alignEnd) {
+            var tw = 0f
+            for (i in 0 until n) tw += wid[i]
+            x = Math.max(0f, width - tw)
+        }
         for (i in 0 until n) {
             val k = n - 1 - i
             if (roll < 1f && changed[k]) {
@@ -177,6 +195,21 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     private var paused = false
     private var isD1 = true
     private var tms = LongArray(0)
+
+    // wolumen: słupki pod wykresem ceny na tej samej osi czasu
+    private var volOn = false
+    private var vols = FloatArray(0)
+    private var vh = FloatArray(0)
+    private var vup = BooleanArray(0)
+    private var slotFrac = 0.01f
+    private var vTop = 0f
+    private var vBot = 0f
+    private var curVol = ""
+    private val pVolUp = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pVolDn = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /** Kursor zniknął sam (4 s bezczynności). */
+    var onCursorGone: (() -> Unit)? = null
 
     // kursor (← →), siatka, znaczniki maks/min: teksty powstają przy zmianie danych/klawiszu, nigdy w onDraw
     private var cursor = -1
@@ -265,10 +298,13 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         pTipP.fontFeatureSettings = "tnum"
         pCur.style = Paint.Style.STROKE
         pCur.strokeWidth = Math.max(1f, u * 0.05f)
+        pVolUp.color = (0x6B shl 24) or (Pal.UP and 0x00FFFFFF)
+        pVolDn.color = (0x6B shl 24) or (Pal.DOWN and 0x00FFFFFF)
     }
 
     fun clear() {
         n = 0
+        volOn = false
         lastCtx = ""
         cursor = -1
         invalidate()
@@ -282,6 +318,23 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     fun resumeAnim() {
         paused = false
         if (attached) Ticker.add(this)
+    }
+
+    /** Włącza kursor na ostatnim punkcie. @return false, gdy brak danych */
+    fun showCursor(): Boolean {
+        if (n < 2) return false
+        cursor = n - 1
+        cursorIdle = 0f
+        cursorStrings()
+        invalidate()
+        return true
+    }
+
+    fun hideCursor() {
+        if (cursor >= 0) {
+            cursor = -1
+            invalidate()
+        }
     }
 
     /** Kursor: ← → przesuwa po punktach (krok ~1% serii), po 4 s bezczynności znika. */
@@ -307,6 +360,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         val sg = if (d > 0f) "+" else if (d < 0f) "−" else ""
         curChg = sg + f2(abs(d)) + "   " + sg + String.format(pl2, "%.2f%%", abs(pct))
         curCol = if (d > 0f) Pal.UP else if (d < 0f) Pal.DOWN else Pal.FLAT
+        curVol = if (volOn && cursor < vols.size) "wol. " + fmtVolume(vols[cursor].toDouble()) else ""
     }
 
     private fun gridStrings() {
@@ -347,6 +401,27 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         }
         prev = cd.prev.toFloat()
         color = col
+        volOn = cd.hasVol
+        if (volOn) {
+            if (vols.size < m) { vols = FloatArray(m); vh = FloatArray(m); vup = BooleanArray(m) }
+            var sum = 0f
+            var cnt = 0
+            var mxv = 0f
+            for (i in 0 until m) {
+                val v = cd.vol[i]
+                vols[i] = v
+                if (v > 0f) { sum += v; cnt++; if (v > mxv) mxv = v }
+            }
+            // wartości odstające (aukcja otwarcia) przycinamy do 4x średniej, żeby reszta słupków była czytelna
+            val mean = if (cnt > 0) sum / cnt else 1f
+            val cap = Math.max(1f, Math.min(mxv, mean * 4f))
+            for (i in 0 until m) {
+                vh[i] = Math.min(1f, vols[i] / cap)
+                val pv = if (i == 0) prev else cd.v[i - 1]
+                vup[i] = cd.v[i] >= pv
+            }
+            slotFrac = if (isD1 && span > 0f) 300_000f / span else 1f / Math.max(1, m - 1)
+        }
         var mn = prev
         var mx = prev
         for (i in 0 until m) {
@@ -405,6 +480,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         }
         lastNx = newNx
         lastCtx = ctx
+        layoutPlot()
         rebuildShader()
         buildPaths()
         invalidate()
@@ -425,12 +501,27 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
         super.onSizeChanged(w, h, ow, oh)
-        pl = u * 0.3f
-        pr = w - u * 0.3f
-        pt = u * 1.0f
-        pb = h - u * 2.8f
+        layoutPlot()
         rebuildShader()
         buildPaths()
+    }
+
+    /** Obszar ceny (góra) i opcjonalnie wolumenu (dół, ok. 22% wysokości) na wspólnej osi czasu. */
+    private fun layoutPlot() {
+        pl = u * 0.3f
+        pr = width - u * 0.3f
+        pt = u * 1.0f
+        val bottom = height - u * 2.8f
+        if (volOn) {
+            val avail = bottom - pt
+            pb = bottom - avail * 0.22f - u * 0.9f
+            vTop = pb + u * 0.9f
+            vBot = bottom
+        } else {
+            pb = bottom
+            vTop = bottom
+            vBot = bottom
+        }
     }
 
     private fun rebuildShader() {
@@ -507,6 +598,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
             if (cursorIdle > 4f) {
                 cursor = -1
                 invalidate()
+                onCursorGone?.invoke()
             }
         }
         pulse += dt
@@ -559,7 +651,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         }
         for (i in 0 until labN) {
             val x = pl + labX[i] * (pr - pl)
-            c.drawLine(x, pt, x, pb, pGrid)
+            c.drawLine(x, pt, x, if (volOn) vBot else pb, pGrid)
         }
 
         // przerywana linia poprzedniego zamknięcia + mała etykieta
@@ -573,6 +665,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         c.drawPath(fill, pFill)
         c.drawPath(line, pLine)
         c.restore()
+        if (volOn) drawVolume(c, rx)
 
         // znaczniki maks/min dnia (pojawiają się, gdy linia je minie)
         if (maxI != minI) {
@@ -602,6 +695,24 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         if (cursor in 0 until n) drawCursor(c)
     }
 
+    /** Słupki wolumenu: wjeżdżają razem z linią ceny (rx = bieżący zasięg rysowania). Stonowane, niska alfa. */
+    private fun drawVolume(c: Canvas, rx: Float) {
+        val bw = Math.max(1.5f, slotFrac * (pr - pl) * 0.64f)
+        val hh = vBot - vTop
+        val ramp = u * 2.5f
+        val rad = bw * 0.22f
+        c.drawLine(pl, vBot, pr, vBot, pGrid)
+        for (i in 0 until n) {
+            val x = px[i]
+            if (x > rx) break
+            var f = if (revealP >= 1f) 1f else (rx - x) / ramp
+            if (f > 1f) f = 1f
+            val h = vh[i] * hh * f
+            if (h < 0.5f) continue
+            c.drawRoundRect(x - bw / 2f, vBot - h, x + bw / 2f, vBot, rad, rad, if (vup[i]) pVolUp else pVolDn)
+        }
+    }
+
     private fun markPoint(c: Canvas, i: Int, s: String, above: Boolean) {
         pCur.color = hex(0xB3EFE8DAL)
         c.drawCircle(px[i], py[i], u * 0.24f, pCur)
@@ -615,7 +726,7 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         val x = px[cursor]
         val y = py[cursor]
         pCur.color = hex(0x55EFE8DAL)
-        c.drawLine(x, pt, x, pb, pCur)
+        c.drawLine(x, pt, x, if (volOn) vBot else pb, pCur)
         pCur.color = Pal.TEXT
         pDot.alpha = 255
         c.drawCircle(x, y, u * 0.34f, pDot)
@@ -625,8 +736,9 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         val wT = pTipT.measureText(curTime)
         val wP = pTipP.measureText(curPrice)
         val lh = u * 1.25f
-        val bw = Math.max(wP, Math.max(wT, pTipT.measureText(curChg))) + pad * 2f
-        val bh = pad * 2f + lh * 0.9f + u * 1.55f + lh
+        val bw = Math.max(wP, Math.max(wT, Math.max(pTipT.measureText(curChg), if (volOn) pTipT.measureText(curVol) else 0f))) + pad * 2f
+        val showVol = volOn && curVol.isNotEmpty()
+        val bh = pad * 2f + lh * 0.9f + u * 1.55f + lh + (if (showVol) lh else 0f)
         var left = x - bw / 2f
         left = left.coerceIn(0f, Math.max(0f, width - bw))
         var top = y - bh - u * 1.1f
@@ -642,6 +754,10 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         pTipT.color = curCol
         c.drawText(curChg, left + pad, ty, pTipT)
         pTipT.color = Pal.TEXT_DIM
+        if (showVol) {
+            ty += lh
+            c.drawText(curVol, left + pad, ty, pTipT)
+        }
     }
 }
 
@@ -661,8 +777,12 @@ class GpwDetailView(
     private val pl = Locale("pl", "PL")
     private val nf = NumberFormat.getNumberInstance(pl)
     private val hm = SimpleDateFormat("HH:mm", pl)
-    private val keys = GPW_INDICES.map { it.first }
+    private val keys = GPW_CARDS.map { it.first }
     private val tabs = ArrayList<TextView>()
+    private val tabGlow = GlowLayer(ctx)
+    private val tabRow = LinearLayout(ctx)
+    private var tabHost: FrameLayout? = null
+    private var cursorMode = false
     private val rangeTabs = ArrayList<TextView>()
     private val status = TextView(ctx)
     private val value = RollingValueView(ctx, u * 8.0f)
@@ -672,6 +792,10 @@ class GpwDetailView(
     private val stHigh = TextView(ctx)
     private val stLow = TextView(ctx)
     private val stPrev = TextView(ctx)
+    private val stVol = TextView(ctx)
+    private val stTurn = TextView(ctx)
+    private var volBox: View? = null
+    private var turnBox: View? = null
 
     private var idx = 0
     private var range = ChartRange.D1
@@ -695,19 +819,36 @@ class GpwDetailView(
         val col = LinearLayout(ctx)
         col.orientation = LinearLayout.VERTICAL
         col.setPadding((u * 3.4f).toInt(), (u * 2.6f).toInt(), (u * 3.4f).toInt(), (u * 2.0f).toInt())
+        col.clipChildren = false
         addView(col, FrameLayout.LayoutParams(-1, -1))
+        chart.onCursorGone = { cursorMode = false }
 
         // nagłówek: indeksy | zakres | status
         val head = LinearLayout(ctx)
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
-        for ((_, name) in GPW_INDICES) {
-            val t = label(name.lowercase(pl), 2.4f, Pal.TEXT_DIM, "sans-serif-light")
+        head.clipChildren = false
+        // karty (WIG20, mWIG40, sWIG80, TEN, GPP): ten sam język zaznaczenia, wspólna poświata przesuwa się między kartami
+        tabRow.orientation = LinearLayout.HORIZONTAL
+        tabRow.clipChildren = false
+        for ((_, name) in GPW_CARDS) {
+            val t = label(name, 2.4f, Pal.TEXT_DIM, "sans-serif-light")
+            t.alpha = Sel.DIM
+            t.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+                v.pivotX = v.width / 2f
+                v.pivotY = v.height / 2f
+            }
             val lp = LinearLayout.LayoutParams(-2, -2)
-            lp.rightMargin = (u * 3.0f).toInt()
-            head.addView(t, lp)
+            lp.rightMargin = (u * 3.4f).toInt()
+            tabRow.addView(t, lp)
             tabs.add(t)
         }
+        val tabHost = FrameLayout(ctx)
+        tabHost.clipChildren = false
+        tabHost.addView(tabGlow, FrameLayout.LayoutParams(-1, -1))
+        tabHost.addView(tabRow, FrameLayout.LayoutParams(-2, -2))
+        head.addView(tabHost, LinearLayout.LayoutParams(-2, -2))
+        this.tabHost = tabHost
         head.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
         for (name in arrayOf("1D", "5D")) {
             val t = label(name, 1.7f, Pal.TEXT_DIM, "sans-serif-light")
@@ -754,11 +895,13 @@ class GpwDetailView(
         addStat(stats, "max", stHigh)
         addStat(stats, "min", stLow)
         addStat(stats, "poprzednie zamknięcie", stPrev)
+        volBox = addStat(stats, "wolumen dziś", stVol)
+        turnBox = addStat(stats, "obrót", stTurn)
         val stp = LinearLayout.LayoutParams(-1, -2)
         stp.topMargin = (u * 1.2f).toInt()
         col.addView(stats, stp)
 
-        val hint = label("←  →  kursor        ↑  ↓  indeks        OK  1D / 5D        Wstecz  zamknij", 1.0f, Pal.TEXT_DIM, "sans-serif-light")
+        val hint = label("←  →  karta        ↓  kursor (←  →, ↑ wyłącza)        OK  1D / 5D        Wstecz  zamknij", 1.0f, Pal.TEXT_DIM, "sans-serif-light")
         hint.gravity = Gravity.END
         val hlp = LinearLayout.LayoutParams(-1, -2)
         hlp.topMargin = (u * 1.4f).toInt()
@@ -798,7 +941,7 @@ class GpwDetailView(
         return t
     }
 
-    private fun addStat(parent: LinearLayout, name: String, v: TextView) {
+    private fun addStat(parent: LinearLayout, name: String, v: TextView): View {
         val box = LinearLayout(context)
         box.orientation = LinearLayout.VERTICAL
         box.addView(label(name, 1.0f, Pal.TEXT_DIM, "sans-serif-light"))
@@ -812,16 +955,17 @@ class GpwDetailView(
         lp.topMargin = (u * 0.5f).toInt()
         box.addView(v, lp)
         parent.addView(box, LinearLayout.LayoutParams(0, -2, 1f))
+        return box
     }
 
     // ------------------------------------------------------------ klawisze
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> { chart.moveCursor(-1); return true }
-            KeyEvent.KEYCODE_DPAD_RIGHT -> { chart.moveCursor(1); return true }
-            KeyEvent.KEYCODE_DPAD_UP -> { moveIndex(-1); return true }
-            KeyEvent.KEYCODE_DPAD_DOWN -> { moveIndex(1); return true }
+            KeyEvent.KEYCODE_DPAD_LEFT -> { if (cursorMode) chart.moveCursor(-1) else moveIndex(-1); return true }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> { if (cursorMode) chart.moveCursor(1) else moveIndex(1); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { if (!cursorMode) cursorMode = chart.showCursor(); return true }
+            KeyEvent.KEYCODE_DPAD_UP -> { exitCursor(); return true }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
                 if (event.repeatCount == 0) toggleRange()
                 return true
@@ -830,23 +974,44 @@ class GpwDetailView(
         return super.onKeyDown(keyCode, event)
     }
 
+    private fun exitCursor() {
+        cursorMode = false
+        chart.hideCursor()
+    }
+
+    /** Wstecz najpierw wyłącza kursor; @return true, gdy zużyte. */
+    fun handleBack(): Boolean {
+        if (!cursorMode) return false
+        exitCursor()
+        return true
+    }
+
     private fun moveIndex(d: Int) {
         idx = (idx + d + keys.size) % keys.size
+        exitCursor()
         switchTo()
     }
 
     private fun toggleRange() {
         range = if (range == ChartRange.D1) ChartRange.D5 else ChartRange.D1
+        exitCursor()
         switchTo()
     }
 
     private fun updateTabs() {
         for (i in tabs.indices) {
-            tabs[i].setTextColor(if (i == idx) Pal.TEXT else Pal.TEXT_DIM)
-            tabs[i].typeface = Typeface.create(if (i == idx) "sans-serif" else "sans-serif-light", Typeface.NORMAL)
+            val on = i == idx
+            val t = tabs[i]
+            t.typeface = Typeface.create(if (on) "sans-serif" else "sans-serif-light", Typeface.NORMAL)
+            val z = if (on) Sel.SCALE else 1f
+            t.animate().cancel()
+            t.animate().scaleX(z).scaleY(z).alpha(if (on) 1f else Sel.DIM)
+                .setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
         }
         rangeTabs[0].setTextColor(if (range == ChartRange.D1) Pal.TEXT else Pal.TEXT_DIM)
         rangeTabs[1].setTextColor(if (range == ChartRange.D5) Pal.TEXT else Pal.TEXT_DIM)
+        val host = tabHost
+        if (host != null && idx < tabs.size) tabGlow.focusOn(host, tabs[idx])
     }
 
     // ------------------------------------------------------------ dane
@@ -862,6 +1027,7 @@ class GpwDetailView(
         token++
         ui.removeCallbacks(poll)
         chart.pauseAnim()
+        tabGlow.reset()
     }
 
     private fun switchTo() {
@@ -880,6 +1046,8 @@ class GpwDetailView(
             change.text = ""
             chart.clear()
             stOpen.text = "–"; stHigh.text = "–"; stLow.text = "–"; stPrev.text = "–"
+            stVol.text = "–"; stTurn.text = "–"
+            showVolStats(keys[idx] in GPW_TICKERS)
             refreshStatus()
         }
         request(true)
@@ -960,11 +1128,23 @@ class GpwDetailView(
         stHigh.text = nf.format(cd.high)
         stLow.text = nf.format(cd.low)
         stPrev.text = nf.format(cd.prev)
+        showVolStats(cd.hasVol)
+        if (cd.hasVol) {
+            stVol.text = fmtVolume(cd.volToday)
+            stTurn.text = fmtTurnover(cd.turnover)
+        }
 
         shownCtx = ctxKey
         shownPrice = cd.price
         shownCd = cd
         refreshStatus()
+    }
+
+    /** Wolumen pusty lub same zera = ukryj "wolumen dziś" i "obrót" (słupki chowa sam wykres). */
+    private fun showVolStats(on: Boolean) {
+        val v = if (on) View.VISIBLE else View.GONE
+        volBox?.visibility = v
+        turnBox?.visibility = v
     }
 
     private fun refreshStatus() {

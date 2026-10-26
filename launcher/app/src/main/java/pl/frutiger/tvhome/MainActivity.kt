@@ -1,6 +1,7 @@
 package pl.frutiger.tvhome
 
 import android.animation.ValueAnimator
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.app.Activity
 import android.app.ActivityOptions
 import android.content.Intent
@@ -45,7 +46,13 @@ class MainActivity : Activity() {
     private lateinit var root: FrameLayout
     private lateinit var rowScroll: HorizontalScrollView
     private lateinit var row: LinearLayout
-    private lateinit var greetingText: TextView
+    private lateinit var home: FrameLayout
+    private lateinit var rowHost: FrameLayout
+    private lateinit var dockGlow: GlowLayer
+    private lateinit var np: NowPlayingPanel
+    private lateinit var npc: NowPlayingController
+    private lateinit var weather: WeatherController
+    private lateinit var idle: IdleScene
     private lateinit var bg: BackgroundController
     private lateinit var gpw: GpwController
     private lateinit var clock: ClockView
@@ -64,6 +71,18 @@ class MainActivity : Activity() {
     private var reorderItem: View? = null
     private var reorderArmed = false
     private var mode = BackgroundController.Mode.NATURE
+
+    // scena bezczynności: po 5 min bez klawisza (launcher na wierzchu) crossfade 2,6 s; pierwszy klawisz tylko budzi (600 ms)
+    private val idleMs = 5 * 60_000L
+    private var lastKeyAt = 0L
+    private var resumed = false
+    private var idleP = 0f
+    private var idleFrom = 0f
+    private var idleTo = 0f
+    private var idleTarget = 0f
+    private var swallowKey = -1
+    private val idleAnim = ValueAnimator.ofFloat(0f, 1f)
+    private var idleCanceled = false
 
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -132,31 +151,41 @@ class MainActivity : Activity() {
             root.addView(scrim, MATCH, MATCH)
         }
 
-        // zegar + powitanie (lewy górny róg)
-        clock = ClockView(this, u)
-        greetingText = TextView(this)
-        greetingText.text = greeting()
-        greetingText.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 1.35f)
-        greetingText.setTextColor(Pal.TEXT_DIM)
-        greetingText.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-        val glp = LinearLayout.LayoutParams(WRAP, WRAP)
-        glp.topMargin = uu(0.5f)
-        glp.leftMargin = uu(0.4f)
-        clock.addView(greetingText, glp)
+        // grupa "normalna" (zegar, widżety, dok): w scenie bezczynności znika, tło zostaje
+        home = FrameLayout(this)
+        home.clipChildren = false
+        root.addView(home, MATCH, MATCH)
+
+        // zegar + data + pogoda + życzenie (lewy górny róg)
+        clock = ClockView(this, u, 1f, true)
         val hlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START)
         hlp.leftMargin = uu(6f)
         hlp.topMargin = (Backdrop.screenH * 0.075f).toInt()
-        root.addView(clock, hlp)
+        home.addView(clock, hlp)
 
-        // widżet GPW (prawy górny róg)
+        // prawy górny róg: widżet GPW, pod nim panel "teraz odtwarzane" (oba dopasowane do zawartości)
+        val pane = LinearLayout(this)
+        pane.orientation = LinearLayout.VERTICAL
+        pane.clipChildren = false
         gw = GpwWidget(this, u)
         gw.id = View.generateViewId()
         gw.onOpen = { openGpw() }
-        val wlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
-        wlp.rightMargin = uu(6f)                                  // prawy brzeg w 94% szerokości
-        wlp.topMargin = (Backdrop.screenH * 0.075f).toInt()       // górny brzeg w 7,5% wysokości
-        root.addView(gw, wlp)
-        gpw = GpwController(this, worker, ui, gw)
+        gw.onShown = { relinkFocus() }
+        val wlp = LinearLayout.LayoutParams(WRAP, WRAP)
+        wlp.gravity = Gravity.END
+        pane.addView(gw, wlp)
+        np = NowPlayingPanel(this, u)
+        np.id = View.generateViewId()
+        np.onOpen = { pkg -> launchIntent(pkg)?.let { launch(it) } }
+        np.onShown = { npVisibilityChanged() }
+        val nlp = LinearLayout.LayoutParams(WRAP, WRAP)
+        nlp.gravity = Gravity.END
+        nlp.topMargin = uu(1.8f)
+        pane.addView(np, nlp)
+        val plp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END)
+        plp.rightMargin = uu(6f)                                  // prawy brzeg w 94% szerokości
+        plp.topMargin = (Backdrop.screenH * 0.075f).toInt()       // górny brzeg w 7,5% wysokości
+        home.addView(pane, plp)
 
         // dok: wąska "wyspa" dopasowana do zawartości, wyśrodkowana, ciemne matowe szkło + obwódka 1 px
         val dock = FrostPanel(this, u * 2.2f, hex(0x9911151BL), hex(0x38FFFFFFL), 1f)
@@ -169,13 +198,62 @@ class MainActivity : Activity() {
         row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.clipChildren = false
-        rowScroll.addView(row, FrameLayout.LayoutParams(WRAP, WRAP))
+        // jedna poświata za kafelkami, płynnie przesuwana do zaznaczonego
+        dockGlow = GlowLayer(this)
+        rowHost = FrameLayout(this)
+        rowHost.clipChildren = false
+        rowHost.addView(dockGlow, FrameLayout.LayoutParams(MATCH, MATCH))
+        rowHost.addView(row, FrameLayout.LayoutParams(WRAP, WRAP))
+        rowScroll.addView(rowHost, FrameLayout.LayoutParams(WRAP, WRAP))
         dock.maxWFrac = 0.60f
         dock.maxHFrac = 0.22f
         dock.addView(rowScroll, FrameLayout.LayoutParams(WRAP, WRAP))
         val dlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         dlp.bottomMargin = (Backdrop.screenH * 0.05f).toInt()
-        root.addView(dock, dlp)
+        home.addView(dock, dlp)
+
+        // scena bezczynności (nad grupą normalną, początkowo ukryta)
+        idle = IdleScene(this, u)
+        idle.visibility = View.GONE
+        idle.alpha = 0f
+        root.addView(idle, MATCH, MATCH)
+
+        // pogoda: wspólny stan (zegar + scena bezczynności)
+        HomeInfo.onChange = {
+            clock.setWeather(HomeInfo.weather)
+            idle.refreshInfo()
+        }
+        clock.setWeather(HomeInfo.weather)
+
+        // notowania: widżet + dolny pasek sceny bezczynności, jeden kontroler co 5 min
+        gpw = GpwController(this, worker, ui, listOf(gw, idle))
+        weather = WeatherController(worker, ui)
+        npc = NowPlayingController(this, ui, worker, np, uu(4.4f))
+
+        idleAnim.addUpdateListener {
+            idleP = idleFrom + (idleTo - idleFrom) * it.animatedFraction
+            applyIdle()
+        }
+        idleAnim.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationStart(animation: android.animation.Animator) {
+                idleCanceled = false
+            }
+
+            override fun onAnimationCancel(animation: android.animation.Animator) {
+                idleCanceled = true
+            }
+
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (idleCanceled) return          // przerwanie (np. wybudzenie w trakcie wejścia): stan prowadzi nowa animacja
+                idleP = idleTo
+                applyIdle()
+                setIdleLayers(false)
+                if (idleP <= 0f) {
+                    idle.visibility = View.GONE
+                    idle.stop()
+                }
+            }
+        })
 
         // napis w prawym dolnym rogu (stały, półprzezroczysty)
         val tlp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.END)
@@ -195,28 +273,55 @@ class MainActivity : Activity() {
             return
         }
         loadSources()
-        greetingText.text = greeting()
         ui.removeCallbacks(rotateTask)
         val wait = if (Backdrop.cur == null) 0L
         else Math.max(0L, rotateMs - (SystemClock.uptimeMillis() - lastChange))
         ui.postDelayed(rotateTask, wait)
         bg.start()
         gpw.start()
+        weather.start()
+        npc.start()
         gpwDetail?.start()
         clock.start()
+        resumed = true
+        Ticker.resume()
+        lastKeyAt = SystemClock.uptimeMillis()
+        ui.removeCallbacks(idleCheck)
+        ui.postDelayed(idleCheck, idleMs)
     }
 
     override fun onPause() {
+        resumed = false
         ui.removeCallbacks(rotateTask)
+        ui.removeCallbacks(idleCheck)
+        // pauza animacji: scena bezczynności wraca do stanu normalnego, Ticker i tło stoją
+        idleAnim.cancel()
+        idleTarget = 0f
+        idleP = 0f
+        applyIdle()
+        setIdleLayers(false)
+        idle.visibility = View.GONE
+        idle.stop()
+        fadeAnim?.cancel()
         bg.stop()
         gpw.stop()
+        weather.stop()
+        npc.stop()
         gpwDetail?.stop()
         clock.stop()
+        Ticker.pause()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        HomeInfo.onChange = null
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
+        if (idleTarget >= 1f || idleP > 0f) wakeFromIdle()
+        lastKeyAt = SystemClock.uptimeMillis()
         hideOverlay(false)
         rowScroll.smoothScrollTo(0, 0)
         row.getChildAt(0)?.requestFocus()
@@ -224,18 +329,11 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (overlay != null) hideOverlay(true)
-        // na ekranie głównym przycisk Wstecz nic nie robi
-    }
-
-    private fun greeting(): String {
-        val hr = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        return when {
-            hr < 5 -> "Dobrej nocy"
-            hr < 12 -> "Dzień dobry"
-            hr < 18 -> "Miłego dnia"
-            else -> "Dobry wieczór"
+        if (overlay != null) {
+            if (gpwDetail?.handleBack() == true) return
+            hideOverlay(true)
         }
+        // na ekranie głównym przycisk Wstecz nic nie robi
     }
 
     // ---------------------------------------------------------------- tapety własne (zdjęcia)
@@ -362,19 +460,21 @@ class MainActivity : Activity() {
 
     private fun makeTile(
         label: String, content: View, w: Float,
-        onClick: () -> Unit, onLong: (() -> Unit)?, dock: Boolean
+        onClick: () -> Unit, onLong: (() -> Unit)?, dock: Boolean,
+        glow: GlowLayer? = null, glowHost: View? = null
     ): TileView {
         val tile = TileView(this, u, w, label, content)
         tile.onFocus = { v ->
             if (dock) {
                 lastDock = v
-                gw.nextFocusDownId = v.id
+                relinkFocus()
             }
+            if (glow != null && glowHost != null) glow.focusOn(glowHost, v, v.card)
             val loc = IntArray(2)
             v.getLocationOnScreen(loc)
             bg.setParallax((loc[0] + v.width / 2f) / Backdrop.screenW * 2f - 1f)
         }
-        if (dock) tile.nextFocusUpId = gw.id
+        tile.onBlur = { glow?.release() }
         tile.setOnClickListener { onClick() }
         if (onLong != null) tile.setOnLongClickListener { onLong(); true }
         return tile
@@ -382,13 +482,14 @@ class MainActivity : Activity() {
 
     private fun buildRow(focusFirst: Boolean, animate: Boolean) {
         row.removeAllViews()
+        dockGlow.reset()
         tilePkg.clear()
         lastDock = null
         val pm = packageManager
         val gap = uu(1.2f)
 
         // pierwszy kafelek: TV (lista wejść)
-        val tv = makeTile("TV", TvGlyphView(this), dockTileW, { openTv() }, null, true)
+        val tv = makeTile("TV", TvGlyphView(this), dockTileW, { openTv() }, null, true, dockGlow, rowHost)
         row.addView(tv, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
 
         for (pkg in favorites().take(9)) {
@@ -399,13 +500,13 @@ class MainActivity : Activity() {
                 continue
             }
             val hold = arrayOfNulls<View>(1)
-            val item = makeTile(label, visualFor(pkg, intent), dockTileW, { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true)
+            val item = makeTile(label, visualFor(pkg, intent), dockTileW, { launch(intent) }, { hold[0]?.let { startReorder(it) } }, true, dockGlow, rowHost)
             hold[0] = item
             tilePkg[item] = pkg
             row.addView(item, LinearLayout.LayoutParams(WRAP, WRAP).also { it.rightMargin = gap })
         }
-        row.addView(makeTile("Aplikacje", GlyphView(this), dockTileW, { showAllApps() }, null, true), LinearLayout.LayoutParams(WRAP, WRAP))
-        gw.nextFocusDownId = row.getChildAt(0)?.id ?: View.NO_ID
+        row.addView(makeTile("Aplikacje", GlyphView(this), dockTileW, { showAllApps() }, null, true, dockGlow, rowHost), LinearLayout.LayoutParams(WRAP, WRAP))
+        relinkFocus()
         if (focusFirst) row.getChildAt(0)?.requestFocus()
         if (animate) playEntrance()
     }
@@ -424,6 +525,85 @@ class MainActivity : Activity() {
                 .setInterpolator(Motion.EASE)
                 .start()
         }
+    }
+
+    // ---------------------------------------------------------------- nawigacja fokusem (dok, widżet, teraz odtwarzane)
+
+    /**
+     * Fokus: dok w górę -> "teraz odtwarzane" (gdy widoczne) albo widżet; panel w górę -> widżet, w dół -> dok;
+     * widżet w dół -> panel (gdy widoczny) albo dok. Wołane po zmianie widoczności panelu/widżetu i fokusu w doku.
+     */
+    private fun relinkFocus() {
+        val npOn = np.visibility == View.VISIBLE
+        val gwOn = gw.visibility == View.VISIBLE
+        val dockTarget = lastDock?.id ?: row.getChildAt(0)?.id ?: View.NO_ID
+        val up = if (npOn) np.id else if (gwOn) gw.id else View.NO_ID
+        gw.nextFocusDownId = if (npOn) np.id else dockTarget
+        np.nextFocusUpId = if (gwOn) gw.id else View.NO_ID
+        np.nextFocusDownId = dockTarget
+        for (i in 0 until row.childCount) row.getChildAt(i).nextFocusUpId = up
+    }
+
+    private fun npVisibilityChanged() {
+        // panel znika razem z fokusem: oddaj go widżetowi albo dokowi
+        if (!np.active && np.hasFocus() && overlay == null) {
+            (if (gw.visibility == View.VISIBLE) gw else lastDock ?: row.getChildAt(0))?.requestFocus()
+        }
+        relinkFocus()
+    }
+
+    // ---------------------------------------------------------------- scena bezczynności
+
+    private val idleCheck = object : Runnable {
+        override fun run() {
+            if (!resumed || idleTarget >= 1f) return
+            val remain = idleMs - (SystemClock.uptimeMillis() - lastKeyAt)
+            if (remain > 0L) {
+                ui.postDelayed(this, remain)
+                return
+            }
+            if (overlay != null || reorderItem != null) {
+                ui.postDelayed(this, 30_000L)      // otwarta nakładka: nie wchodzimy w bezczynność
+                return
+            }
+            enterIdle()
+        }
+    }
+
+    /** Hardware layer tylko na czas crossfade'u: grupa jest renderowana raz, a alfa to tani blending. */
+    private fun setIdleLayers(on: Boolean) {
+        val t = if (on) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
+        home.setLayerType(t, null)
+        idle.setLayerType(t, null)
+    }
+
+    private fun applyIdle() {
+        home.alpha = 1f - idleP
+        idle.alpha = idleP
+    }
+
+    private fun runIdle(to: Float, ms: Long) {
+        idleAnim.cancel()
+        idleFrom = idleP
+        idleTo = to
+        idleTarget = to
+        idleAnim.duration = ms
+        idleAnim.interpolator = if (to >= 1f) AccelerateDecelerateInterpolator() else Motion.EASE
+        setIdleLayers(true)
+        idleAnim.start()
+    }
+
+    private fun enterIdle() {
+        idle.visibility = View.VISIBLE
+        idle.start()
+        runIdle(1f, 2600L)
+    }
+
+    private fun wakeFromIdle() {
+        ui.removeCallbacks(idleCheck)
+        runIdle(0f, 600L)
+        lastKeyAt = SystemClock.uptimeMillis()
+        ui.postDelayed(idleCheck, idleMs)
     }
 
     // ---------------------------------------------------------------- widok szczegółowy GPW
@@ -481,12 +661,26 @@ class MainActivity : Activity() {
             v.animate().translationX(0f).setDuration(Motion.MS).setInterpolator(Motion.EASE).start()
         }
         item.requestFocus()
+        (item as? TileView)?.let { dockGlow.focusOn(rowHost, it, it.card) }
         val list = ArrayList<String>()
         for (i in lead until row.childCount - 1) tilePkg[row.getChildAt(i)]?.let { list.add(it) }
         prefs.edit().putString("fav", list.joinToString(",")).apply()
     }
 
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        lastKeyAt = SystemClock.uptimeMillis()
+        // pierwszy klawisz w scenie bezczynności tylko budzi i nie jest wykonywany (łącznie z powtórzeniami i zwolnieniem)
+        if (e.keyCode == swallowKey) {
+            if (e.action == KeyEvent.ACTION_UP) swallowKey = -1
+            return true
+        }
+        if (idleTarget >= 1f) {
+            if (e.action == KeyEvent.ACTION_DOWN) {
+                swallowKey = e.keyCode
+                wakeFromIdle()
+            }
+            return true
+        }
         val item = reorderItem
         if (item != null) {
             val k = e.keyCode
@@ -514,6 +708,7 @@ class MainActivity : Activity() {
         if (overlay != null) return
         returnTo = currentFocus
         gw.isFocusable = false
+        np.isFocusable = false
         val wrap = FrostPanel(this, 0f, scrimTint, 0, 0f)
         wrap.isClickable = true
         wrap.addView(sheet, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -530,6 +725,7 @@ class MainActivity : Activity() {
         overlay = null
         rowScroll.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         gw.isFocusable = true
+        np.isFocusable = true
         gpwDetail?.stop()
         gpwDetail = null
         val back = returnTo
@@ -583,6 +779,11 @@ class MainActivity : Activity() {
         val grid = GridLayout(this)
         grid.columnCount = 6
         grid.clipChildren = false
+        val gridGlow = GlowLayer(this)
+        val gridHost = FrameLayout(this)
+        gridHost.clipChildren = false
+        gridHost.addView(gridGlow, FrameLayout.LayoutParams(MATCH, MATCH))
+        gridHost.addView(grid, FrameLayout.LayoutParams(WRAP, WRAP))
         for (ri in apps) {
             val pkg = ri.activityInfo.packageName
             val label = ri.loadLabel(pm).toString()
@@ -610,7 +811,7 @@ class MainActivity : Activity() {
                     holder[0]?.labelView?.text = if (nowFav) "★ $label" else label
                     buildRow(false, false)
                 },
-                false
+                false, gridGlow, gridHost
             )
             holder[0] = item
             val glp = GridLayout.LayoutParams()
@@ -624,7 +825,7 @@ class MainActivity : Activity() {
         scroll.clipChildren = false
         scroll.clipToPadding = false
         scroll.setPadding(uu(1.2f), uu(2f), uu(1.2f), uu(4f))
-        scroll.addView(grid, FrameLayout.LayoutParams(WRAP, WRAP))
+        scroll.addView(gridHost, FrameLayout.LayoutParams(WRAP, WRAP))
         val slp = LinearLayout.LayoutParams(MATCH, 0, 1f)
         slp.topMargin = uu(1.2f)
         col.addView(scroll, slp)

@@ -1,13 +1,10 @@
 package pl.frutiger.tvhome
 
-import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
@@ -19,62 +16,10 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 
-/** Wspólne zaznaczenie: skala 1.12 w 200 ms (ease-out), przygaszenie 70% -> 100%, nazwa (fade 150 ms). */
-object Sel {
-    const val SCALE = 1.12f
-    const val DIM = 0.7f
-    const val MS = 200L
-    const val LABEL_MS = 150L
-}
-
-/**
- * Bardzo delikatne, miękkie światło pod zaznaczonym elementem (radialny gradient, bez ramek i prostokątów).
- * Jeden animator i jeden shader na cały czas życia; w draw() brak alokacji.
- */
-class SoftGlow(private val host: View) {
-    private var a = 0f
-    private var from = 0f
-    private var to = 0f
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val anim = ValueAnimator.ofFloat(0f, 1f)
-
-    init {
-        p.shader = RadialGradient(
-            0f, 0f, 1f,
-            intArrayOf(0x30EFE8DA, 0x14EFE8DA, 0x00EFE8DA), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP
-        )
-        anim.duration = Sel.MS
-        anim.interpolator = Motion.EASE
-        anim.addUpdateListener {
-            a = from + (to - from) * it.animatedFraction
-            val m = Math.max(host.width, host.height) / 2
-            host.invalidate(-m, -m, host.width + m, host.height + m)
-        }
-    }
-
-    fun set(on: Boolean) {
-        anim.cancel()
-        from = a
-        to = if (on) 1f else 0f
-        anim.start()
-    }
-
-    fun cancel() = anim.cancel()
-
-    fun draw(c: Canvas, cx: Float, cy: Float, rx: Float, ry: Float) {
-        if (a <= 0.01f) return
-        p.alpha = (a * 255f).toInt()
-        c.save()
-        c.translate(cx, cy)
-        c.scale(rx, ry)
-        c.drawCircle(0f, 0f, 1f, p)
-        c.restore()
-    }
-}
-
 /**
  * Jednolity, zaokrąglony kafelek 16:9. Bez ramek i teł zaznaczenia: niezaznaczony przygaszony (70%), zaznaczony
- * w pełnym kolorze, skala 1.12 (200 ms, ease-out), pod nim nazwa (fade 150 ms) i bardzo delikatne miękkie światło.
+ * w pełnym kolorze, skala 1.12 (220 ms, ease-out), jasny odblask górnej krawędzi, miękki cień i nazwa pod spodem.
+ * Poświata jest wspólna dla kontenera ([GlowLayer]) i przesuwa się między kafelkami.
  */
 class TileView(
     ctx: Context,
@@ -89,7 +34,8 @@ class TileView(
     val labelView = TextView(ctx)
     var onFocus: ((TileView) -> Unit)? = null
     var onBlur: ((TileView) -> Unit)? = null
-    private val glow = SoftGlow(this)
+    private val fx = SelFx(this, u)
+    private val sheen = View(ctx)
 
     init {
         orientation = VERTICAL
@@ -113,6 +59,11 @@ class TileView(
         card.clipToOutline = true
         card.alpha = Sel.DIM
         card.addView(content, FrameLayout.LayoutParams(-1, -1))
+
+        // wąski, jasny odblask na górnej krawędzi (gradient 20% -> 0)
+        sheen.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x33FFFFFF, 0x00FFFFFF))
+        sheen.alpha = 0f
+        card.addView(sheen, FrameLayout.LayoutParams(-1, (h * 0.30f).toInt(), Gravity.TOP))
         addView(card, LayoutParams(w, h))
 
         labelView.text = label
@@ -128,14 +79,19 @@ class TileView(
         val lp = LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT)
         lp.topMargin = (u * 0.9f).toInt()
         addView(labelView, lp)
+
+        fx.onStep = SelStep { s ->
+            val z = 1f + (Sel.SCALE - 1f) * s
+            card.scaleX = z
+            card.scaleY = z
+            card.alpha = Sel.DIM + (1f - Sel.DIM) * s
+            sheen.alpha = s
+        }
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        val z = if (gainFocus) Sel.SCALE else 1f
-        card.animate().cancel()
-        card.animate().scaleX(z).scaleY(z).alpha(if (gainFocus) 1f else Sel.DIM)
-            .setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
+        fx.set(gainFocus)
         if (showLabel) {
             // nazwa zjeżdża razem z dolną krawędzią powiększonej karty
             val dy = if (gainFocus) card.height * (Sel.SCALE - 1f) / 2f else 0f
@@ -143,18 +99,17 @@ class TileView(
             labelView.animate().alpha(if (gainFocus) 1f else 0f).translationY(dy)
                 .setDuration(Sel.LABEL_MS).setInterpolator(Motion.EASE).start()
         }
-        glow.set(gainFocus)
         if (gainFocus) onFocus?.invoke(this) else onBlur?.invoke(this)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        // światło pod kartą (rysowane przed dziećmi, więc kafelek i napis leżą na nim)
-        glow.draw(canvas, width / 2f, card.height * (0.5f + Sel.SCALE / 2f), card.width * 0.62f, card.height * 0.95f)
+        // miękki cień pod kartą (przed dziećmi, więc karta i napis leżą na nim)
+        fx.drawShadowAt(canvas, card.left.toFloat(), card.top.toFloat(), card.right.toFloat(), card.bottom.toFloat())
         super.dispatchDraw(canvas)
     }
 
     override fun onDetachedFromWindow() {
-        glow.cancel()
+        fx.cancel()
         super.onDetachedFromWindow()
     }
 }

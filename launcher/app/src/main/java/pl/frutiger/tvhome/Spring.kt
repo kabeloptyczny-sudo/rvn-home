@@ -38,10 +38,27 @@ object Ticker : Choreographer.FrameCallback {
     private val list = ArrayList<Tick>()
     private var last = 0L
     private var posted = false
+    private var paused = false
+
+    /** Pauza wszystkich animacji (onPause): zdejmuje callback Choreographera. */
+    fun pause() {
+        paused = true
+        Choreographer.getInstance().removeFrameCallback(this)
+        posted = false
+    }
+
+    fun resume() {
+        paused = false
+        if (list.isNotEmpty() && !posted) {
+            posted = true
+            last = 0L
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
 
     fun add(t: Tick) {
         if (!list.contains(t)) list.add(t)
-        if (!posted) {
+        if (!posted && !paused) {
             posted = true
             last = 0L
             Choreographer.getInstance().postFrameCallback(this)
@@ -61,7 +78,7 @@ object Ticker : Choreographer.FrameCallback {
             val t = list[i]
             if (t.onTick(dt)) i++ else list.remove(t)
         }
-        if (list.isEmpty()) posted = false
+        if (list.isEmpty() || paused) posted = false
         else Choreographer.getInstance().postFrameCallback(this)
     }
 }

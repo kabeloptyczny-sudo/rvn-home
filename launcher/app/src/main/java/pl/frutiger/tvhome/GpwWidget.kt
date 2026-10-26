@@ -1,7 +1,6 @@
 package pl.frutiger.tvhome
 
 import android.content.Context
-import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
@@ -19,22 +18,32 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/** Wąski, szklany, fokusowalny panel (OK = widok szczegółowy): WIG20, mWIG40, sWIG80. Same lekkie widoki, zero pracy w onDraw poza sparkline. */
+/**
+ * Wąski, szklany, fokusowalny panel (OK = widok szczegółowy): WIG20, mWIG40, sWIG80.
+ * Dopasowany do zawartości (max 35% x 35% ekranu). Wartości z animacją cyfr i zielonym/czerwonym podświetleniem
+ * przy zmianie (znika w ok. 3 s). Zaznaczenie: wspólny język ([SelFx]).
+ */
 class GpwWidget(ctx: Context, private val u: Float) :
-    FrostPanel(ctx, u * 1.5f, hex(0x4D1B2027L), hex(0x2EFFFFFFL), Math.max(1f, u * 0.055f)) {
+    FrostPanel(ctx, u * 1.5f, hex(0x4D1B2027L), hex(0x2EFFFFFFL), Math.max(1f, u * 0.055f)), QuoteSink {
 
-    private class RowViews(val name: TextView, val value: TextView, val chg: TextView, val spark: SparklineView, val row: LinearLayout)
+    private class RowViews(
+        val name: TextView, val value: RollingValueView, val chg: TextView,
+        val spark: SparklineView, val row: LinearLayout, var last: Double = Double.NaN
+    )
 
     private val rows = LinkedHashMap<String, RowViews>()
     private val status = TextView(ctx)
     private val content = LinearLayout(ctx)
-    private val glow = SoftGlow(this)
+    private val sfx = SelFx(this, u)
     var onOpen: (() -> Unit)? = null
+    /** Zmiana widoczności (do przepięcia nawigacji fokusem). */
+    var onShown: (() -> Unit)? = null
     private val pl = Locale("pl", "PL")
     private val nf = NumberFormat.getNumberInstance(pl)
     private val clockFmt = SimpleDateFormat("HH:mm", pl)
 
     init {
+        fx = sfx
         isFocusable = true
         isClickable = true
         defaultFocusHighlightEnabled = false
@@ -45,40 +54,45 @@ class GpwWidget(ctx: Context, private val u: Float) :
         col.alpha = Sel.DIM
         col.orientation = LinearLayout.VERTICAL
         col.setPadding((u * 1.6f).toInt(), (u * 1.2f).toInt(), (u * 1.6f).toInt(), (u * 1.1f).toInt())
-        for ((k, n) in GPW_INDICES) addRow(ctx, col, k, n.lowercase(pl))
+        for ((k, n) in GPW_INDICES) addRow(ctx, col, k, n)
         status.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 0.95f)
         status.setTextColor(Pal.TEXT_DIM)
         status.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
         status.includeFontPadding = false
         status.gravity = Gravity.END
         val sp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        sp.topMargin = (u * 0.9f).toInt()
+        sp.topMargin = (u * 0.7f).toInt()
         col.addView(status, sp)
         addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         maxWFrac = 0.35f
         maxHFrac = 0.35f
         visibility = View.GONE
+        sfx.onStep = SelStep { s ->
+            val z = 1f + (Sel.SCALE - 1f) * s
+            scaleX = z
+            scaleY = z
+            content.alpha = Sel.DIM + (1f - Sel.DIM) * s
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        super.onSizeChanged(w, h, ow, oh)
+        pivotX = w.toFloat()
+        pivotY = 0f
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        pivotX = width.toFloat()
-        pivotY = 0f
-        val z = if (gainFocus) Sel.SCALE else 1f
-        animate().cancel()
-        animate().scaleX(z).scaleY(z).setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
-        content.animate().cancel()
-        content.animate().alpha(if (gainFocus) 1f else Sel.DIM).setDuration(Sel.MS).setInterpolator(Motion.EASE).start()
-        glow.set(gainFocus)
+        sfx.set(gainFocus)
     }
 
-    override fun dispatchDraw(canvas: Canvas) {
-        glow.draw(canvas, width / 2f, height.toFloat(), width * 0.55f, height * 0.40f)
-        super.dispatchDraw(canvas)
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (changedView === this) onShown?.invoke()
     }
 
     override fun onDetachedFromWindow() {
-        glow.cancel()
+        sfx.cancel()
         super.onDetachedFromWindow()
     }
 
@@ -95,7 +109,7 @@ class GpwWidget(ctx: Context, private val u: Float) :
         r.orientation = LinearLayout.HORIZONTAL
         r.gravity = Gravity.CENTER_VERTICAL
         val n = TextView(ctx); n.text = label; txt(n, 1.15f, Pal.TEXT_DIM, "sans-serif")
-        val v = TextView(ctx); txt(v, 1.7f, Pal.TEXT, "sans-serif-light"); v.gravity = Gravity.END
+        val v = RollingValueView(ctx, u * 1.7f, "sans-serif-light", true)
         val c = TextView(ctx); txt(c, 1.1f, Pal.FLAT, "sans-serif"); c.gravity = Gravity.END
         val s = SparklineView(ctx, Math.max(1.5f, u * 0.10f))
         val wrap = LinearLayout.LayoutParams.WRAP_CONTENT
@@ -106,12 +120,13 @@ class GpwWidget(ctx: Context, private val u: Float) :
         slp.leftMargin = (u * 1.1f).toInt()
         r.addView(s, slp)
         val lp = LinearLayout.LayoutParams(wrap, wrap)
-        lp.topMargin = (u * 0.9f).toInt()
+        lp.topMargin = (u * 0.6f).toInt()
         col.addView(r, lp)
         rows[key] = RowViews(n, v, c, s, r)
     }
 
-    fun bind(data: Map<String, Quote>, newest: Long, stale: Boolean, loc: Locale, tz: TimeZone) {
+    override fun bind(data: Map<String, Quote>, newest: Long, stale: Boolean, loc: Locale, tz: TimeZone) {
+        var any = false
         clockFmt.timeZone = tz
         val time = if (newest > 0L) clockFmt.format(Date(newest)) else ""
         status.text = if (stale) "nieaktualne" + (if (time.isNotEmpty()) " · $time" else "") else "opóźnione"
@@ -121,8 +136,11 @@ class GpwWidget(ctx: Context, private val u: Float) :
                 rv.row.visibility = View.GONE
                 continue
             }
+            any = true
             rv.row.visibility = View.VISIBLE
-            rv.value.text = nf.format(q.price)
+            val flash = if (!rv.last.isNaN() && Math.abs(q.price - rv.last) > 1e-9) (if (q.price > rv.last) 1 else -1) else 0
+            rv.value.set(nf.format(q.price), flash)
+            rv.last = q.price
             val p = q.changePct
             val up = p > 0.004
             val down = p < -0.004
@@ -135,5 +153,6 @@ class GpwWidget(ctx: Context, private val u: Float) :
             rv.spark.set(q.series, color)
             rv.spark.visibility = if (q.series.size >= 2) View.VISIBLE else View.INVISIBLE
         }
+        visibility = if (any) View.VISIBLE else View.GONE
     }
 }

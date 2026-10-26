@@ -52,5 +52,17 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </service>
+
+        <!-- Listener powiadomień: potrzebny tylko po to, by czytać aktywne sesje multimedialne (panel "teraz odtwarzane").
+             Dostęp nadajemy komendą adb, patrz CO-SPRAWDZIC-NA-TV.txt. -->
+        <service
+            android:name=".MediaListener"
+            android:exported="true"
+            android:label="RVN Home"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
