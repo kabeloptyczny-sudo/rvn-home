@@ -209,7 +209,7 @@ class MainActivity : Activity() {
         rowHost.addView(row, FrameLayout.LayoutParams(MATCH, WRAP))
         rowScroll.addView(rowHost, FrameLayout.LayoutParams(MATCH, WRAP))
         val dlp = FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM)
-        dlp.bottomMargin = (Backdrop.screenH * 0.02f).toInt()
+        dlp.bottomMargin = (Backdrop.screenH * 0.04f).toInt()
         home.addView(rowScroll, dlp)
 
         // scena bezczynności (nad grupą normalną, początkowo ukryta)

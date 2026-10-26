@@ -14,11 +14,12 @@ object Pal {
     const val UP = 0xFF6FBF8E.toInt()
     const val DOWN = 0xFFD9776B.toInt()
     const val FLAT = 0xFFB8B8B8.toInt()
+    const val brandTag = "powered by RAEVEN_networking z GK RAEVEN"
 }
 
 fun brandTag(ctx: Context, u: Float): TextView {
     val t = TextView(ctx)
-    t.text = "rvn"
+    t.text = Pal.brandTag
     t.setTextSize(TypedValue.COMPLEX_UNIT_PX, u * 0.95f)
     t.setTextColor(Pal.TEXT_DIM)
     t.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)

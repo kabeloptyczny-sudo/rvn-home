@@ -159,13 +159,19 @@ class YahooSource : QuoteSource {
     }
 
     override fun fetchChart(key: String, range: ChartRange): ChartData? {
-        val tries = if (range == ChartRange.D1) listOf("1d" to "5m") else listOf("5d" to "15m")
+        val isStock = GPW_TICKERS.contains(key)
+        val tries = if (range == ChartRange.D1) {
+            if (isStock) listOf("1d" to "30s", "1d" to "1m")
+            else listOf("1d" to "1m", "1d" to "5m")
+        } else {
+            listOf("5d" to "15m")
+        }
         var best: ChartData? = null
         for ((rg, iv) in tries) {
             val cd = try {
                 chart(key, rg, iv, range)
             } catch (e: HttpFail) {
-                if (e.code == 400 || e.code == 404) null else throw e
+                if (e.code == 400 || e.code == 404 || e.code == 429) null else throw e
             }
             if (cd != null && cd.t.size >= 2) return cd
             if (cd != null && best == null) best = cd
@@ -185,7 +191,7 @@ class YahooSource : QuoteSource {
         val hi = q.optJSONArray("high")
         val lo = q.optJSONArray("low")
         val vo = q.optJSONArray("volume")
-        val bucket = if (range == ChartRange.D1) 300L else 900L
+        val bucket = if (iv == "30s") 30L else if (iv == "1m") 60L else if (range == ChartRange.D1) 300L else 900L
         val tt = ArrayList<Long>()
         val vv = ArrayList<Float>()
         val bv = ArrayList<Float>()
