@@ -39,7 +39,7 @@ import kotlin.math.roundToInt
 class MainActivity : Activity() {
 
     private val ui = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newFixedThreadPool(2)   // 2 wątki: odświeżanie widżetu GPW nie głodzi widoku szczegółowego
     private lateinit var prefs: SharedPreferences
     private lateinit var root: FrameLayout
     private lateinit var rowScroll: HorizontalScrollView

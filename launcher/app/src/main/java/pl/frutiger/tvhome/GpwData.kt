@@ -3,6 +3,7 @@ package pl.frutiger.tvhome
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
+import android.util.Log
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -11,6 +12,9 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.ExecutorService
+
+/** Tag logów całego pobierania i parsowania notowań. */
+const val GPW_TAG = "GpwData"
 
 /** Indeksy: klucz -> nazwa wyświetlana. */
 val GPW_INDICES = listOf("WIG20" to "WIG20", "MWIG40" to "mWIG40", "SWIG80" to "sWIG80")
@@ -94,6 +98,7 @@ object Net {
 
     fun get(url: String): String {
         require(url.startsWith("https://")) { "tylko HTTPS" }
+        Log.d(GPW_TAG, "GET $url")
         val c = URL(url).openConnection() as HttpURLConnection
         try {
             c.connectTimeout = 8000
@@ -101,12 +106,35 @@ object Net {
             c.setRequestProperty("User-Agent", UA)
             c.setRequestProperty("Accept", "application/json")
             val code = c.responseCode
-            if (code != 200) throw HttpFail(code)
-            return c.inputStream.bufferedReader().use { it.readText() }
+            if (code != 200) {
+                Log.e(GPW_TAG, "HTTP $code <- $url")
+                throw HttpFail(code)
+            }
+            val body = c.inputStream.bufferedReader().use { it.readText() }
+            Log.d(GPW_TAG, "HTTP $code len=${body.length} <- $url")
+            return body
+        } catch (e: HttpFail) {
+            throw e
+        } catch (e: IOException) {
+            Log.e(GPW_TAG, "błąd sieci ${e.javaClass.simpleName}: ${e.message} <- $url")
+            throw e
         } finally {
             c.disconnect()
         }
     }
+}
+
+/** Pusta / nieprawidłowa odpowiedź Yahoo (z krótkim powodem do pokazania w widoku). */
+class EmptyData(msg: String) : IOException(msg)
+
+/** Krótki powód porażki pobrania do napisu "brak danych: ...". */
+fun gpwReason(e: Throwable): String = when (e) {
+    is HttpFail -> if (e.code == 429) "HTTP 429 (limit zapytań)" else "HTTP " + e.code
+    is java.net.SocketTimeoutException -> "timeout"
+    is java.net.UnknownHostException, is java.net.ConnectException -> "brak sieci"
+    is EmptyData -> e.message ?: "pusty wynik"
+    is org.json.JSONException -> "błąd danych"
+    else -> e.javaClass.simpleName
 }
 
 /**
@@ -116,21 +144,58 @@ object Net {
  */
 class YahooSource : QuoteSource {
 
+    private val hosts = listOf("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+
+    /** Pobranie wykresu Yahoo; przy 429/5xx/błędzie sieci próba na drugim hoście. 400/404 od razu wyżej. */
+    private fun yahooGet(sym: String, rg: String, iv: String): String {
+        var last: Exception? = null
+        for (h in hosts) {
+            try {
+                return Net.get("https://" + h + "/v8/finance/chart/" + java.net.URLEncoder.encode(sym, "UTF-8") +
+                        "?range=" + rg + "&interval=" + iv)
+            } catch (e: HttpFail) {
+                if (e.code == 400 || e.code == 404) throw e
+                last = e
+            } catch (e: IOException) {
+                last = e
+            }
+        }
+        throw last ?: EmptyData("brak odpowiedzi")
+    }
+
     override fun fetch(key: String): Quote? {
         val sym = "$key.WA"
         val body = try {
-            Net.get("https://query1.finance.yahoo.com/v8/finance/chart/" + java.net.URLEncoder.encode(sym, "UTF-8") +
-                    "?range=1d&interval=5m")
+            yahooGet(sym, "1d", "5m")
         } catch (e: HttpFail) {
-            if (e.code == 404) return null
+            if (e.code == 404) {
+                Log.e(GPW_TAG, "quote $sym: 404, symbol nieznany")
+                return null
+            }
             throw e
         }
-        val res = JSONObject(body).optJSONObject("chart")?.optJSONArray("result")?.optJSONObject(0) ?: return null
-        val meta = res.optJSONObject("meta") ?: return null
+        val res = try {
+            JSONObject(body).optJSONObject("chart")?.optJSONArray("result")?.optJSONObject(0)
+        } catch (e: Exception) {
+            Log.e(GPW_TAG, "quote $sym: JSON ${e.message}")
+            null
+        }
+        if (res == null) {
+            Log.e(GPW_TAG, "quote $sym: brak result")
+            return null
+        }
+        val meta = res.optJSONObject("meta")
+        if (meta == null) {
+            Log.e(GPW_TAG, "quote $sym: brak meta")
+            return null
+        }
         val price = meta.optDouble("regularMarketPrice", Double.NaN)
         var prev = meta.optDouble("previousClose", Double.NaN)
         if (prev.isNaN() || prev == 0.0) prev = meta.optDouble("chartPreviousClose", Double.NaN)
-        if (price.isNaN() || prev.isNaN() || prev == 0.0) return null
+        if (price.isNaN() || prev.isNaN() || prev == 0.0) {
+            Log.e(GPW_TAG, "quote $sym: brak ceny/zamknięcia price=$price prev=$prev")
+            return null
+        }
 
         val tsA = res.optJSONArray("timestamp")
         val closes = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0)?.optJSONArray("close")
@@ -139,13 +204,14 @@ class YahooSource : QuoteSource {
         val tt = LongArray(n)
         var m = 0
         for (i in 0 until n) {
-            if (closes!!.isNull(i)) continue          // null pomijamy, nie zerujemy
+            if (closes!!.isNull(i) || tsA!!.isNull(i)) continue          // null pomijamy, nie zerujemy
             val v = closes.optDouble(i, Double.NaN)
             if (v.isNaN()) continue
             tv[m] = v.toFloat()
-            tt[m] = tsA!!.optLong(i) * 1000L
+            tt[m] = tsA.optLong(i) * 1000L
             m++
         }
+        Log.d(GPW_TAG, "quote $sym: price=$price prev=$prev punkty=$m/$n")
         val step = Math.max(1, (m + 59) / 60)
         val cnt = (m + step - 1) / step
         val extra = if (m > 0 && (m - 1) % step != 0) 1 else 0
@@ -159,38 +225,53 @@ class YahooSource : QuoteSource {
     }
 
     override fun fetchChart(key: String, range: ChartRange): ChartData? {
-        val isStock = GPW_TICKERS.contains(key)
-        val tries = if (range == ChartRange.D1) {
-            if (isStock) listOf("1d" to "30s", "1d" to "1m")
-            else listOf("1d" to "1m", "1d" to "5m")
-        } else {
-            listOf("5d" to "15m")
-        }
+        val tries = if (range == ChartRange.D1) listOf("1d" to "1m", "1d" to "5m") else listOf("5d" to "15m")
         var best: ChartData? = null
+        var fail: Exception? = null
         for ((rg, iv) in tries) {
-            val cd = try {
-                chart(key, rg, iv, range)
-            } catch (e: HttpFail) {
-                if (e.code == 400 || e.code == 404 || e.code == 429) null else throw e
+            try {
+                val cd = chart(key, rg, iv, range)
+                if (cd.t.size >= 2) return cd
+                if (best == null) best = cd
+            } catch (e: Exception) {
+                fail = e
+                Log.e(GPW_TAG, "chart $key $rg/$iv: ${e.javaClass.simpleName}: ${e.message}")
             }
-            if (cd != null && cd.t.size >= 2) return cd
-            if (cd != null && best == null) best = cd
         }
-        return best
+        if (best != null) return best
+        throw fail ?: EmptyData("pusty wynik")
     }
 
-    private fun chart(key: String, rg: String, iv: String, range: ChartRange): ChartData? {
-        val body = Net.get("https://query1.finance.yahoo.com/v8/finance/chart/" +
-                java.net.URLEncoder.encode("$key.WA", "UTF-8") + "?range=$rg&interval=$iv")
-        val res = JSONObject(body).optJSONObject("chart")?.optJSONArray("result")?.optJSONObject(0) ?: return null
-        val meta = res.optJSONObject("meta") ?: return null
-        val ts = res.optJSONArray("timestamp") ?: return null
-        val q = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0) ?: return null
-        val cl = q.optJSONArray("close") ?: return null
-        val op = q.optJSONArray("open")
-        val hi = q.optJSONArray("high")
-        val lo = q.optJSONArray("low")
-        val vo = q.optJSONArray("volume")
+    /** Parser odporny na brak indicators/timestamp i na null w timestamp/close/volume. Rzuca [EmptyData] z powodem. */
+    private fun chart(key: String, rg: String, iv: String, range: ChartRange): ChartData {
+        val tag = "chart $key $rg/$iv"
+        val body = yahooGet("$key.WA", rg, iv)
+        val root = try {
+            JSONObject(body)
+        } catch (e: Exception) {
+            Log.e(GPW_TAG, "$tag: JSON ${e.message}")
+            throw EmptyData("błąd parsowania")
+        }
+        val chartObj = root.optJSONObject("chart")
+        val err = chartObj?.optJSONObject("error")
+        if (err != null) {
+            Log.e(GPW_TAG, "$tag: błąd Yahoo $err")
+            throw EmptyData("Yahoo: " + err.optString("code", "błąd"))
+        }
+        val res = chartObj?.optJSONArray("result")?.optJSONObject(0)
+        if (res == null) {
+            Log.e(GPW_TAG, "$tag: brak result")
+            throw EmptyData("pusty wynik")
+        }
+        val meta = res.optJSONObject("meta")
+        val ts = res.optJSONArray("timestamp")
+        val q = res.optJSONObject("indicators")?.optJSONArray("quote")?.optJSONObject(0)
+        val cl = q?.optJSONArray("close")
+        val op = q?.optJSONArray("open")
+        val hi = q?.optJSONArray("high")
+        val lo = q?.optJSONArray("low")
+        val vo = q?.optJSONArray("volume")
+        Log.d(GPW_TAG, "$tag: meta=${meta != null} timestamp=${ts?.length() ?: -1} close=${cl?.length() ?: -1} volume=${vo?.length() ?: -1}")
         val bucket = if (iv == "30s") 30L else if (iv == "1m") 60L else if (range == ChartRange.D1) 300L else 900L
         val tt = ArrayList<Long>()
         val vv = ArrayList<Float>()
@@ -202,10 +283,12 @@ class YahooSource : QuoteSource {
         var hiV = Double.NEGATIVE_INFINITY
         var loV = Double.POSITIVE_INFINITY
         var lastB = Long.MIN_VALUE
-        for (i in 0 until ts.length()) {
-            if (cl.isNull(i)) continue
+        var skipped = 0
+        val total = if (ts != null && cl != null) ts.length() else 0
+        for (i in 0 until total) {
+            if (ts!!.isNull(i) || cl!!.isNull(i)) { skipped++; continue }
             val c = cl.optDouble(i, Double.NaN)
-            if (c.isNaN()) continue
+            if (c.isNaN()) { skipped++; continue }
             val sec = ts.optLong(i)
             if (openV.isNaN() && op != null && !op.isNull(i)) openV = op.optDouble(i, Double.NaN)
             if (hi != null && !hi.isNull(i)) hiV = Math.max(hiV, hi.optDouble(i, Double.NEGATIVE_INFINITY))
@@ -228,18 +311,31 @@ class YahooSource : QuoteSource {
                 lastB = b
             }
         }
-        if (tt.size < 2) return null
+        Log.d(GPW_TAG, "$tag: punkty=${tt.size} pominięte(null)=$skipped")
         var mn = Float.MAX_VALUE
         var mx = -Float.MAX_VALUE
         for (x in vv) { if (x < mn) mn = x; if (x > mx) mx = x }
+        val last = if (vv.isNotEmpty()) vv[vv.size - 1].toDouble() else Double.NaN
+        var price = meta?.optDouble("regularMarketPrice", Double.NaN) ?: Double.NaN
+        if (price.isNaN()) price = last
+        var prev = if (range == ChartRange.D1) (meta?.optDouble("previousClose", Double.NaN) ?: Double.NaN) else Double.NaN
+        if (prev.isNaN() || prev == 0.0) prev = meta?.optDouble("chartPreviousClose", Double.NaN) ?: Double.NaN
+        if ((prev.isNaN() || prev == 0.0) && vv.isNotEmpty()) prev = vv[0].toDouble()
+        if (price.isNaN() || prev.isNaN() || prev == 0.0) {
+            Log.e(GPW_TAG, "$tag: brak ceny/zamknięcia price=$price prev=$prev")
+            throw EmptyData("pusty wynik")
+        }
+        val mt = (meta?.optLong("regularMarketTime", 0L) ?: 0L) * 1000L
+        if (tt.size < 2) {
+            // brak serii: pokazujemy samą cenę i statystyki z meta, wykres dostaje komunikat
+            val dh = meta?.optDouble("regularMarketDayHigh", Double.NaN) ?: Double.NaN
+            val dl = meta?.optDouble("regularMarketDayLow", Double.NaN) ?: Double.NaN
+            return ChartData(key, range, LongArray(0), FloatArray(0), price, prev, price,
+                if (dh.isNaN()) price else dh, if (dl.isNaN()) price else dl, 0L, 0L, mt, FloatArray(0), 0.0, 0.0)
+        }
         if (openV.isNaN()) openV = vv[0].toDouble()
         if (hiV == Double.NEGATIVE_INFINITY) hiV = mx.toDouble()
         if (loV == Double.POSITIVE_INFINITY) loV = mn.toDouble()
-        var prev = if (range == ChartRange.D1) meta.optDouble("previousClose", Double.NaN) else Double.NaN
-        if (prev.isNaN() || prev == 0.0) prev = meta.optDouble("chartPreviousClose", Double.NaN)
-        if (prev.isNaN() || prev == 0.0) return null
-        val price = meta.optDouble("regularMarketPrice", vv[vv.size - 1].toDouble())
-        val mt = meta.optLong("regularMarketTime", 0L) * 1000L
         var a0 = tt[0]
         var a1 = tt[tt.size - 1]
         if (range == ChartRange.D1) {

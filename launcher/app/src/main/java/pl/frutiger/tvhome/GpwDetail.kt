@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.Handler
+import android.util.Log
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.RelativeSizeSpan
@@ -215,6 +216,8 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     private val pDot = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pHalo = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pText = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pMsg = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var msg: String? = null
     private var labN = 0
     private val labX = FloatArray(8)
     private val labT = arrayOfNulls<String>(8)
@@ -230,6 +233,10 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         pDash.strokeWidth = Math.max(1.5f, u * 0.07f)
         pDash.color = hex(0x66EFE8DAL)
         pDash.pathEffect = DashPathEffect(floatArrayOf(u * 0.55f, u * 0.55f), 0f)
+        pMsg.textSize = u * 1.7f
+        pMsg.color = Pal.TEXT_DIM
+        pMsg.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+        pMsg.textAlign = Paint.Align.CENTER
         pText.textSize = u * 1.0f
         pText.color = Pal.TEXT_DIM
         pText.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
@@ -265,6 +272,12 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
         pTipP.fontFeatureSettings = "tnum"
         pCur.style = Paint.Style.STROKE
         pCur.strokeWidth = Math.max(1f, u * 0.05f)
+    }
+
+    /** Komunikat w miejscu wykresu (ładowanie / brak danych + powód); null = brak. Rysowany tylko przy n < 2. */
+    fun setMessage(m: String?) {
+        msg = m
+        invalidate()
     }
 
     fun clear() {
@@ -330,6 +343,11 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     /** @param mode 0 = bez animacji, 1 = rysowanie od lewej (otwarcie/zmiana), 2 = wjazd nowego punktu */
     fun setData(cd: ChartData, col: Int, mode: Int) {
         val m = cd.t.size
+        if (m < 2) {
+            clear()
+            return
+        }
+        msg = null
         val ctx = cd.key + "/" + cd.range
         val sameCtx = ctx == lastCtx && n > 0
         val ox = lastNx
@@ -546,7 +564,11 @@ class ChartView(context: Context, private val u: Float) : View(context), Tick {
     }
 
     override fun onDraw(c: Canvas) {
-        if (n < 2 || pb <= pt) return
+        if (n < 2 || pb <= pt) {
+            val mm = msg
+            if (mm != null && width > 0) c.drawText(mm, width / 2f, height / 2f, pMsg)
+            return
+        }
         updateTip()
 
         // siatka (subtelna) + etykiety osi Y
@@ -661,7 +683,7 @@ class GpwDetailView(
     private val pl = Locale("pl", "PL")
     private val nf = NumberFormat.getNumberInstance(pl)
     private val hm = SimpleDateFormat("HH:mm", pl)
-    private val keys = GPW_INDICES.map { it.first }
+    private val keys = GPW_CARDS.map { it.first }
     private val tabs = ArrayList<TextView>()
     private val rangeTabs = ArrayList<TextView>()
     private val tabGlow = GlowLayer(ctx)
@@ -688,6 +710,7 @@ class GpwDetailView(
     private var shownCtx = ""
     private var shownPrice = Double.NaN
     private var shownCd: ChartData? = null
+    private var failReason: String? = null
     private val poll = Runnable { request(false) }
 
     init {
@@ -698,6 +721,9 @@ class GpwDetailView(
         defaultFocusHighlightEnabled = false
         val col = LinearLayout(ctx)
         col.orientation = LinearLayout.VERTICAL
+        col.clipChildren = false          // poświata zakładek wychodzi poza ich obrys: nic nie może jej ucinać
+        col.clipToPadding = false
+        clipToPadding = false
         col.setPadding((u * 3.4f).toInt(), (u * 2.6f).toInt(), (u * 3.4f).toInt(), (u * 2.0f).toInt())
         addView(col, FrameLayout.LayoutParams(-1, -1))
 
@@ -705,25 +731,34 @@ class GpwDetailView(
         val head = LinearLayout(ctx)
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
-        for ((_, name) in GPW_INDICES) {
-            val t = label(name.lowercase(pl), 2.4f, Pal.TEXT_DIM, "sans-serif-light")
+        head.clipChildren = false
+        head.clipToPadding = false
+        for ((key, name) in GPW_CARDS) {
+            // indeksy małymi literami, spółki (TEN, GPP) wielkimi; zakładki zawsze widoczne, także bez danych
+            val t = label(if (GPW_TICKERS.contains(key)) name.uppercase(pl) else name.lowercase(pl), 2.4f, Pal.TEXT_DIM, "sans-serif-light")
+            t.setPadding((u * 0.5f).toInt(), (u * 0.3f).toInt(), (u * 0.5f).toInt(), (u * 0.3f).toInt())
             val lp = LinearLayout.LayoutParams(-2, -2)
-            lp.rightMargin = (u * 3.0f).toInt()
+            lp.rightMargin = (u * 2.4f).toInt()
             head.addView(t, lp)
             tabs.add(t)
         }
         head.addView(View(ctx), LinearLayout.LayoutParams(0, 1, 1f))
         for (name in arrayOf("1D", "5D")) {
             val t = label(name, 1.7f, Pal.TEXT_DIM, "sans-serif-light")
+            t.setPadding((u * 0.5f).toInt(), (u * 0.3f).toInt(), (u * 0.5f).toInt(), (u * 0.3f).toInt())
             val lp = LinearLayout.LayoutParams(-2, -2)
-            lp.leftMargin = (u * 1.4f).toInt()
+            lp.leftMargin = (u * 1.0f).toInt()
             head.addView(t, lp)
             rangeTabs.add(t)
         }
         headHost = FrameLayout(ctx)
         headHost.clipChildren = false
+        headHost.clipToPadding = false
+        // szeroka, miękka poświata (radial gradient z alfą do 0 na krawędziach), szersza niż tekst zakładki
+        tabGlow.spreadX = 1.5f; tabGlow.spreadY = 2.2f; tabGlow.biasY = 0f
+        rangeGlow.spreadX = 2.0f; rangeGlow.spreadY = 2.2f; rangeGlow.biasY = 0f
         val tg = FrameLayout.LayoutParams(-1, -1)
-        tg.setMargins(-(u * 1.5f).toInt(), -(u * 1.4f).toInt(), -(u * 1.5f).toInt(), -(u * 1.4f).toInt())
+        tg.setMargins(-(u * 2.0f).toInt(), -(u * 2.0f).toInt(), -(u * 2.0f).toInt(), -(u * 2.0f).toInt())
         headHost.addView(tabGlow, tg)
         headHost.addView(rangeGlow, FrameLayout.LayoutParams(tg))
         headHost.addView(head, FrameLayout.LayoutParams(-1, -2))
@@ -897,6 +932,7 @@ class GpwDetailView(
         token++
         fails = 0
         stale = false
+        failReason = null
         updateTabs()
         val c = cache[keys[idx] + "/" + range]
         if (c != null) {
@@ -908,6 +944,7 @@ class GpwDetailView(
             value.set("–", 0)
             change.text = ""
             chart.clear()
+            chart.setMessage("ładowanie...")
             stOpen.text = "–"; stHigh.text = "–"; stLow.text = "–"; stPrev.text = "–"
             refreshStatus()
         }
@@ -922,24 +959,29 @@ class GpwDetailView(
         val my = token
         val k = keys[idx]
         val r = range
+        Log.d(GPW_TAG, "detail: żądanie $k $r")
         worker.execute {
             var res: ChartData? = null
-            var bad = false
+            var reason: String? = null
             try {
                 res = source.fetchChart(k, r)
+                if (res == null) reason = "pusty wynik"
             } catch (e: Exception) {
-                bad = true
+                reason = gpwReason(e)
+                Log.e(GPW_TAG, "detail: $k $r błąd: ${e.javaClass.simpleName}: ${e.message}")
             }
             val out = res
-            val fail = bad || out == null
-            ui.post { onResult(my, k, r, out, fail) }
+            val why = reason
+            ui.post { onResult(my, k, r, out, why) }
         }
     }
 
-    private fun onResult(my: Int, k: String, r: ChartRange, cd: ChartData?, fail: Boolean) {
+    private fun onResult(my: Int, k: String, r: ChartRange, cd: ChartData?, reason: String?) {
         inflight--
         if (my != token || !running) return
-        if (!fail && cd != null) {
+        val fail = cd == null
+        if (cd != null) {
+            Log.d(GPW_TAG, "detail: $k $r ok punkty=${cd.t.size} cena=${cd.price}")
             fails = 0
             stale = false
             cache["$k/$r"] = cd
@@ -947,6 +989,12 @@ class GpwDetailView(
         } else {
             fails++
             stale = true
+            if (shownCd == null) {
+                // nic do pokazania w tym widoku: jawny stan "brak danych" z powodem
+                failReason = reason ?: "pusty wynik"
+                chart.clear()
+                chart.setMessage("brak danych: " + failReason)
+            }
             refreshStatus()
         }
         val delay = when {
@@ -984,7 +1032,13 @@ class GpwDetailView(
         change.text = sb
         change.setTextColor(col)
 
-        chart.setData(cd, col, if (same) 2 else 1)
+        failReason = null
+        if (cd.t.size >= 2) {
+            chart.setData(cd, col, if (same) 2 else 1)
+        } else {
+            chart.clear()
+            chart.setMessage("brak danych: pusty wynik (brak notowań z sesji)")
+        }
         stOpen.text = nf.format(cd.open)
         stHigh.text = nf.format(cd.high)
         stLow.text = nf.format(cd.low)
@@ -1000,6 +1054,8 @@ class GpwDetailView(
         val tm = shownCd?.marketTime ?: 0L
         val t = if (tm > 0L) hm.format(Date(tm)) else ""
         status.text = when {
+            shownCd == null && failReason != null -> "brak danych"
+            shownCd == null -> "ładowanie..."
             stale -> "nieaktualne" + (if (t.isNotEmpty()) " · $t" else "")
             GpwClock.inSession() -> "opóźnione" + (if (t.isNotEmpty()) " · $t" else "")
             else -> "rynek zamknięty, ostatnia sesja"

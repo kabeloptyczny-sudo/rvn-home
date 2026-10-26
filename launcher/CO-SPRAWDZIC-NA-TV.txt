@@ -14,3 +14,10 @@ CO SPRAWDZIC NA TV (TCL 43C69B i Sony XG85):
 8. Plynnosc (zwlaszcza Sony): przytrzymana strzalka w doku i siatce; wyjscie z aplikacji i powrot.
 9. Uklad: dok max 60% x 22%, widzet GPW i panel max 35% x 35%.
 10. Okladka w panelu odtwarzania: Spotify/YouTube Music - jest okladka (takze gdy aplikacja podaje tylko URI); bez okladki widoczna nuta, bez crashy.
+
+WIDOK SZCZEGOLOWY GPW (naprawa):
+11. Zakladki: wig20, mwig40, swig80, TEN, GPP - wszystkie zawsze widoczne (gora/dol przelacza, takze bez danych). Domyslnie 1D.
+12. Stany: najpierw "ladowanie...", potem wykres albo "brak danych: <powod>" (HTTP 429, timeout, brak sieci, pusty wynik).
+13. Zaznaczenie zakladki i 1D/5D: miekka poswata, zadnego prostokata, pierwsza litera nie jest ucinana.
+14. Diagnostyka gdyby wykres nadal byl pusty: adb logcat -s GpwData  (kazde GET z URL, kod, dlugosc body, liczba punktow).
+
